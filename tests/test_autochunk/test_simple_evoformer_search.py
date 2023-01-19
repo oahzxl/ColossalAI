@@ -29,10 +29,10 @@ def assert_chunk_infos(chunk_infos, max_memory, msa_len, pair_len):
 
     if msa_len == 32 and pair_len == 64:
         if max_memory is None:
-            target_regions = [(142, 154), (366, 373), (233, 283), (301, 351), (127, 134), (205, 228), (168, 191),
-                              (161, 166), (198, 203), (6, 57)]
+            target_regions = [(142, 154), (366, 373), (234, 283), (302, 351), (127, 134), (211, 228), (174, 191),
+                              (161, 166), (198, 203), (7, 57)]
         elif max_memory == 20:
-            target_regions = [(142, 154), (369, 373), (233, 269), (301, 351)]
+            target_regions = [(142, 154), (369, 373), (235, 269), (303, 351), (130, 131)]
         elif max_memory == 25:
             target_regions = [(144, 154), (369, 370)]
         elif max_memory == 30:
