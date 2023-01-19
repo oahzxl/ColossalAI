@@ -7,6 +7,8 @@ def flat_list(inputs):
     """
     flat a list by recursion
     """
+    if not (isinstance(inputs, list) or isinstance(inputs, set) or isinstance(inputs, tuple)):
+        return [inputs]
     res = []
     for i in inputs:
         if isinstance(i, list) or isinstance(i, set) or isinstance(i, tuple):
