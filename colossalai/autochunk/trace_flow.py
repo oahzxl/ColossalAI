@@ -184,7 +184,7 @@ class TraceFlow(object):
 
                 # get all valid args
                 arg_list = []
-                for arg in cur_node.args:
+                for arg in cur_node.all_input_nodes:
                     if type(arg) != type(cur_node):
                         continue
                     if is_non_compute_node(arg):

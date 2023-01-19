@@ -36,6 +36,8 @@ def is_non_compute_node(node):
         for node_arg in node_args:
             if any(i == str(node_arg) for i in ["None", "Ellipsis"]):
                 return False
+            if "slice" in str(node_arg):
+                return False
         return True
     return False
 
@@ -44,6 +46,14 @@ def get_node_shape(node):
     if hasattr(node.meta["tensor_meta"], "shape"):
         return node.meta["tensor_meta"].shape
     return None
+
+
+def is_non_memory_node(node):
+    if "getitem" in node.name:
+        return True
+    if "output" in node.op:
+        return True
+    return is_non_compute_node(node)
 
 
 def is_non_compute_node_except_placeholder(node):
