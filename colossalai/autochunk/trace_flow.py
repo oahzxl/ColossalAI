@@ -32,6 +32,7 @@ class TraceFlow(object):
         Returns:
             bool: True if check pass
         """
+        # we use start_node_idx instead of real chunk index
         start_node_idx = find_idx_by_name(start_node.name, self.trace_indice.node_list)
         end_node_trace = self.trace_indice._find_trace_from_node(end_node)
         end_node_trace_source = end_node_trace["source"][end_dim]
@@ -40,7 +41,7 @@ class TraceFlow(object):
             if node_idx == start_node_idx and start_dim in node_dim:
                 return True
             # it means we meet a node outside the loop, and the node is not input node
-            if node_idx < start_idx:
+            if node_idx < start_node_idx:
                 return False
         return False
 
@@ -465,6 +466,8 @@ class TraceFlow(object):
         for node in self.trace_indice.node_list[chunk_region[0]:chunk_region[1] + 1]:
             if any(i == get_node_name(node) for i in ["reshape", "view"]):
                 if node in chunk_info["args"]["prepose_nodes"]:
+                    continue
+                if node.args[0] in chunk_info["inputs"] or node.args[0] in chunk_info["inputs_non_chunk"]:
                     continue
                 reshape_args = flat_list(node.args[1:])
                 if len(reshape_args) == 1 and get_node_shape(reshape_args[0]) is None and len(
