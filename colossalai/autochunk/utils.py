@@ -42,6 +42,8 @@ def is_non_compute_node(node: Node) -> bool:
     if any(i == node.op for i in NON_COMPUTE_OP) or any(i == get_node_name(node) for i in NON_COMPUTE_NAME):
         return True
     if "getitem" in node.name:
+        if get_node_shape(node) is not None:
+            return False
         node_args = flat_list(node.args[1:])
         for node_arg in node_args:
             if any(i == str(node_arg) for i in ["None", "Ellipsis"]):
@@ -53,6 +55,8 @@ def is_non_compute_node(node: Node) -> bool:
 
 
 def get_node_shape(node: Node) -> List:
+    if get_node_name(node) == "split":
+        return node.meta["tensor_meta"][0].shape
     if hasattr(node.meta["tensor_meta"], "shape"):
         return node.meta["tensor_meta"].shape
     return None
@@ -162,3 +166,14 @@ def get_node_name(node: Node) -> str:
             else:
                 break
     return node_name
+
+
+def find_tensor_node(node_list: List[Node]) -> List[Node]:
+    """
+    find tensor nodes from a node list
+    """
+    out = []
+    for node in node_list:
+        if get_node_shape(node) is not None:
+            out.append(node)
+    return out

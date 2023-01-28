@@ -454,8 +454,6 @@ class TraceIndice(object):
             node (node)
             node_idx (int)
         """
-        for _ in range(len(get_node_shape(node.args[0]))):
-            self._add_dim(node_idx, 0)
         self._assign_indice_as_input(node, node_idx)
         dim_idx = node.kwargs["dim"]
         self._del_dim(node_idx, dim_idx)

@@ -70,22 +70,21 @@ def _gen_loop_start(chunk_input: List[Node], chunk_output: Node, chunk_ouput_dim
         context (str): generated str
     """
     input_node = chunk_input[0]
-    out_shape = get_node_shape(chunk_output)
-    out_str = str(list(out_shape))
-    context = (
-        "chunk_result = torch.empty(%s, dtype=%s.dtype, device=%s.device); chunk_size = %d\nfor chunk_idx in range" %
-        (out_str, input_node.name, input_node.name, chunk_size))
-    context += "(0, %d, chunk_size):\n" % (out_shape[chunk_ouput_dim])
+
+    context = ""
+    for i in range(len(chunk_output)):
+        out_str = str(list(get_node_shape(chunk_output[i])))
+        context += "%s = torch.empty(%s, dtype=%s.dtype, device=%s.device);  " % (chunk_output[i].name, out_str,
+                                                                                  input_node.name, input_node.name)
+
+    out_shape = get_node_shape(chunk_output[0])
+    chunk_shape = out_shape[chunk_ouput_dim[0]]
+    context += "chunk_size = %d\nfor chunk_idx in range(0, %d, chunk_size):\n" % (chunk_size, chunk_shape)
     return context
 
 
-def _gen_loop_end(
-    chunk_inputs: List[Node],
-    chunk_non_compute_inputs: List[Node],
-    chunk_outputs: Node,
-    chunk_outputs_dim: int,
-    node_list: List[Node],
-) -> str:
+def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node], chunk_outputs: Node,
+                  chunk_outputs_dim: int, node_list: List[Node], chunk_outputs_idx: int) -> str:
     """
     Generate chunk loop end
 
@@ -102,22 +101,11 @@ def _gen_loop_end(
     Returns:
         context (str): generated str
     """
-    chunk_outputs_name = chunk_outputs.name
-    chunk_outputs_idx = find_idx_by_name(chunk_outputs_name, node_list)
-    chunk_output_shape = chunk_outputs.meta["tensor_meta"].shape
-    chunk_slice = _gen_chunk_slice_dim(chunk_outputs_dim, "chunk_idx", chunk_output_shape)
-    context = "    chunk_result%s = %s;  %s = None\n" % (
-        chunk_slice,
-        chunk_outputs_name,
-        chunk_outputs_name,
-    )
-    context += (chunk_outputs_name + " = chunk_result;  chunk_result = None;  chunk_size = None")
-
+    context = "chunk_size = None"
     # determine if its the last use for chunk input
     for chunk_input in chunk_inputs + chunk_non_compute_inputs:
         if all([find_idx_by_name(user.name, node_list) <= chunk_outputs_idx for user in chunk_input.users.keys()]):
             context += ";  %s = None" % chunk_input.name
-
     context += "\n"
     return context
 
@@ -169,20 +157,27 @@ def _replace_ones_like(
     return body
 
 
-def _replace_input_node(
+def _add_node_slice(
     chunk_inputs: List[Node],
     region_idx: int,
     chunk_inputs_dim: Dict,
     node_idx: int,
     body: List[str],
+    node: Node,
 ) -> List[str]:
     """
     add chunk slice for input nodes
     """
     for input_node_idx, input_node in enumerate(chunk_inputs[region_idx]):
-        for idx, dim in chunk_inputs_dim[region_idx][input_node_idx].items():
-            if idx == node_idx:
-                chunk_slice = _gen_chunk_slice_dim(dim[0], "chunk_idx", get_node_shape(input_node))
+        if isinstance(chunk_inputs_dim[region_idx][input_node_idx], dict):
+            for idx, dim in chunk_inputs_dim[region_idx][input_node_idx].items():
+                if idx == node_idx:
+                    chunk_slice = _gen_chunk_slice_dim(dim[0], "chunk_idx", get_node_shape(input_node))
+                    body[-1] = _replace_name(body[-1], input_node.name, input_node.name + chunk_slice)
+        else:
+            if input_node.name == node.name or (input_node.name in [i.name for i in node.all_input_nodes]):
+                chunk_slice = _gen_chunk_slice_dim(chunk_inputs_dim[region_idx][input_node_idx], "chunk_idx",
+                                                   get_node_shape(input_node))
                 body[-1] = _replace_name(body[-1], input_node.name, input_node.name + chunk_slice)
     return body
 
@@ -222,7 +217,7 @@ def emit_code_with_chunk(
     chunk_inputs_names = [j.name for i in chunk_inputs for j in i] + [j.name for i in chunk_inputs_non_chunk for j in i]
 
     # chunk outputs
-    chunk_outputs = [i["outputs"][0] for i in chunk_infos]
+    chunk_outputs = [i["outputs"] for i in chunk_infos]
     chunk_outputs_dim = [i["outputs_dim"] for i in chunk_infos]
 
     node_list = search_chunk.reorder_graph.reorder_node_list(node_list)
@@ -248,7 +243,9 @@ def emit_code_with_chunk(
         if within_chunk_region:
             emit_node_func(node, body)
             # replace input var with chunk var
-            body = _replace_input_node(chunk_inputs, region_idx, chunk_inputs_dim, node_idx, body)
+            body = _add_node_slice(chunk_inputs, region_idx, chunk_inputs_dim, node_idx, body, node)
+            # replace output var with chunk var
+            body = _add_node_slice(chunk_outputs, region_idx, chunk_outputs_dim, node_idx, body, node)
             # ones like
             body = _replace_ones_like(search_chunk, chunk_infos, region_idx, node_idx, node, body)
             # reassgin reshape size
@@ -269,6 +266,7 @@ def emit_code_with_chunk(
                     chunk_outputs[region_idx],
                     chunk_outputs_dim[region_idx],
                     node_list,
+                    chunk_ends[region_idx],
                 ))
             within_chunk_region = False
 

@@ -7,6 +7,7 @@ from .utils import (
     find_chunk_all_input_nodes,
     find_chunk_compute_input_and_output_nodes,
     find_idx_by_name,
+    find_tensor_node,
     flat_list,
     get_node_name,
     get_node_shape,
@@ -84,6 +85,7 @@ class TraceFlow(object):
         arg_node: Node,
         start_idx: int,
         end_idx: int,
+        cur_node: Node,
         cur_node_dim: int,
         cur_node_compute: Dict,
         cur_node_source: Dict,
@@ -126,6 +128,11 @@ class TraceFlow(object):
                 # chunk dim should be None if shape size is 1
                 if get_node_shape(arg_node)[arg_dim] == 1:
                     arg_dim = None
+                # chunk shape should equal cur node
+                elif get_node_shape(arg_node)[arg_dim] != 1:
+                    if cur_node_dim is not None and get_node_shape(cur_node)[cur_node_dim] != 1:
+                        if get_node_shape(arg_node)[arg_dim] != get_node_shape(cur_node)[cur_node_dim]:
+                            return False
         else:
             arg_dim = None
 
@@ -178,6 +185,7 @@ class TraceFlow(object):
                         arg,
                         start_idx,
                         end_idx,
+                        cur_node,
                         cur_node_chunk_dim,
                         cur_node_compute,
                         cur_node_source,
@@ -262,7 +270,7 @@ class TraceFlow(object):
                 inputs.remove(i)
         return inputs, inputs_dim
 
-    def _get_prepose_nodes(self, all_node_info: Dict, start_idx: int, end_idx: int) -> List[Node]:
+    def _get_prepose_nodes(self, all_node_info: Dict, start_idx: int, end_idx: int, chunk_info) -> List[Node]:
         """
         get all useless nodes in chunk region and prepose them
 
@@ -278,6 +286,9 @@ class TraceFlow(object):
         maybe_prepose_nodes = []
         for node, node_info in all_node_info.items():
             if node_info["chunk_dim"] is None:
+                maybe_prepose_nodes.append(node)
+        for node in self.trace_indice.node_list[start_idx:end_idx]:
+            if node not in all_node_info and node not in chunk_info["outputs"]:
                 maybe_prepose_nodes.append(node)
         maybe_prepose_nodes.sort(
             key=lambda x: find_idx_by_name(x.name, self.trace_indice.node_list),
@@ -329,8 +340,7 @@ class TraceFlow(object):
                         maybe_prepose_nodes.remove(n)
         # sort by index
         prepose_nodes.sort(key=lambda x: find_idx_by_name(x.name, self.trace_indice.node_list))
-
-        return prepose_nodes
+        chunk_info["args"]["prepose_nodes"] = prepose_nodes
 
     def _get_non_chunk_inputs(self, chunk_info, start_idx, end_idx):
         # we need to log input nodes to avoid deleteing them in the loop
@@ -346,33 +356,41 @@ class TraceFlow(object):
 
     def flow_search(self, start_idx, start_dim, end_idx, end_dim):
         inputs, outputs = find_chunk_compute_input_and_output_nodes(self.trace_indice.node_list[start_idx:end_idx + 1])
-        # only single ouput
-        if len(outputs) > 1:
-            return None
+        # limit output num
+        # if len(find_tensor_node(outputs)) > 3:
+        #     return None
 
         # get every node's chunk dim and fix dim
         all_node_info = self._get_all_node_info(end_dim, start_idx, end_idx)
         if all_node_info is None:
             return None
 
-        # get input nodes' chunk dim
-        inputs, inputs_dim = self._get_input_nodes_dim(inputs, start_idx, end_idx, all_node_info)
-        if inputs is None:
-            return None
-
         chunk_info = {
             "region": (start_idx, end_idx),
-            "inputs": inputs,
+            "inputs": [],
             "inputs_non_chunk": [],
-            "inputs_dim": inputs_dim,
-            "outputs": outputs,
-            "outputs_dim": end_dim,
+            "inputs_dim": [],
+            "outputs": [self.trace_indice.node_list[end_idx]],
+            "outputs_dim": [end_dim],
             "node_chunk_dim": all_node_info,
             "args": {},
         }
 
+        # find chunk info for other outputs
+        if len(find_tensor_node(outputs)) > 1:
+            chunk_info = self._get_other_output_info(outputs, start_idx, start_dim, end_idx, end_dim, chunk_info)
+            if chunk_info is None:
+                return None
+
+        # get input nodes' chunk dim
+        inputs, inputs_dim = self._get_input_nodes_dim(inputs, start_idx, end_idx, all_node_info)
+        if inputs is None:
+            return None
+        chunk_info["inputs"] = inputs
+        chunk_info["inputs_dim"] = inputs_dim
+
         # move useless nodes ahead of loop
-        chunk_info["args"]["prepose_nodes"] = self._get_prepose_nodes(all_node_info, start_idx, end_idx)
+        self._get_prepose_nodes(all_node_info, start_idx, end_idx, chunk_info)
 
         # find non chunk inputs
         chunk_info = self._get_non_chunk_inputs(chunk_info, start_idx, end_idx)
@@ -382,6 +400,60 @@ class TraceFlow(object):
 
         return chunk_info
 
+    def _get_other_output_info(self, outputs: List[Node], start_idx: int, start_dim: int, end_idx: int, end_dim: int,
+                               chunk_info: Dict):
+        start_node = self.trace_indice.node_list[start_idx]
+        # loop all outputs
+        for output in outputs:
+            output_legal = False
+            output_idx = find_idx_by_name(output.name, self.trace_indice.node_list)
+            # skip the origin output
+            if output_idx == end_idx:
+                continue
+            # skip non tensor
+            if get_node_shape(output) is None:
+                continue
+            # loop every dim of outputs, try to find a legal one
+            for output_dim in range(len(get_node_shape(output))):
+                if not self._check_region_start_end(start_node, start_dim, start_idx, output, output_dim, output_idx):
+                    continue
+                new_all_node_info = self._get_all_node_info(output_dim, start_idx, output_idx)
+                if new_all_node_info is None:
+                    continue
+                # check node info legal
+                if self._update_chunk_info(chunk_info, new_all_node_info, output, output_dim) == True:
+                    output_legal = True
+                    break
+            # not legal
+            if output_legal == False:
+                return None
+        return chunk_info
+
+    def _update_chunk_info(self, chunk_info: Dict, new_all_node_info: Dict, output: Node, output_dim: int) -> bool:
+        """
+        check if there is conflict between new node info and old chunk info. If not, update old chunk info
+        """
+        # check if conflict
+        overlap_flag = False
+        for k, v in new_all_node_info.items():
+            if k in chunk_info["node_chunk_dim"]:
+                overlap_flag = True
+                if chunk_info["node_chunk_dim"][k]["chunk_dim"] != v["chunk_dim"]:
+                    return False
+        # if no overlap, we just consider them as prepose nodes, instead of new output
+        if overlap_flag == False:
+            return True
+        # update chunk info
+        for k, v in new_all_node_info.items():
+            if k in chunk_info["node_chunk_dim"]:
+                chunk_info["node_chunk_dim"][k]["fix_dim"] = list(
+                    set(chunk_info["node_chunk_dim"][k]["fix_dim"] + v["fix_dim"]))
+            else:
+                chunk_info["node_chunk_dim"][k] = v
+        chunk_info["outputs"].append(output)
+        chunk_info["outputs_dim"].append(output_dim)
+        return True
+
     def _reassgin_reshape_size(self, chunk_info):
         """
         Some shape args in reshape may have changed due to chunk
@@ -389,10 +461,15 @@ class TraceFlow(object):
         """
         chunk_region = chunk_info["region"]
         reshape_size = {}
-        chunk_shape = get_node_shape(chunk_info["outputs"][0])[chunk_info["outputs_dim"]]
+        chunk_shape = get_node_shape(chunk_info["outputs"][0])[chunk_info["outputs_dim"][0]]
         for node in self.trace_indice.node_list[chunk_region[0]:chunk_region[1] + 1]:
             if any(i == get_node_name(node) for i in ["reshape", "view"]):
+                if node in chunk_info["args"]["prepose_nodes"]:
+                    continue
                 reshape_args = flat_list(node.args[1:])
+                if len(reshape_args) == 1 and get_node_shape(reshape_args[0]) is None and len(
+                        reshape_args[0].meta['fwd_out']) > 1:
+                    continue
                 chunk_dim = chunk_info["node_chunk_dim"][node]["chunk_dim"]
                 new_shape = ""
                 for reshape_arg_dim, reshape_arg in enumerate(reshape_args):
