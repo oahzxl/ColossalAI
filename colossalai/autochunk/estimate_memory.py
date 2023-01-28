@@ -212,7 +212,7 @@ class EstimateMemory(object):
             chunk_inputs_non_chunk = [i["inputs_non_chunk"] for i in chunk_infos]
             chunk_inputs_names = [j.name for i in chunk_inputs for j in i
                                  ] + [j.name for i in chunk_inputs_non_chunk for j in i]
-            chunk_outputs = [i["outputs"][0] for i in chunk_infos]
+            chunk_outputs = [i["outputs"] for i in chunk_infos]
             chunk_node_dim = [i["node_chunk_dim"] for i in chunk_infos]
             chunk_sizes = [i["chunk_size"] if "chunk_size" in i else 1 for i in chunk_infos]
 
@@ -221,7 +221,7 @@ class EstimateMemory(object):
             if use_chunk and idx in chunk_starts:
                 chunk_within = True
                 chunk_region_idx = chunk_starts.index(idx)
-                act_memory += self._get_output_node_size(chunk_outputs[chunk_region_idx]) / (1024**2)
+                act_memory += sum(self._get_output_node_size(i) for i in chunk_outputs[chunk_region_idx]) / (1024**2)
 
             # determine chunk ratio for current node
             if chunk_within:
