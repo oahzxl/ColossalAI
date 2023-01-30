@@ -20,6 +20,7 @@ def assert_codegen_run(
     model: Any,
     data: tuple,
     max_memory: int = None,
+    print_est_mem: bool = False,
     print_mem: bool = False,
     print_progress: bool = False,
     print_code: bool = False,
@@ -41,7 +42,7 @@ def assert_codegen_run(
     codegen = AutoChunkCodeGen(
         meta_graph,
         max_memory=max_memory,
-        print_mem=print_mem,
+        print_mem=print_est_mem,
         print_progress=print_progress,
     )
     chunks = codegen.chunk_infos
@@ -65,11 +66,17 @@ def assert_codegen_run(
 
     # assert result
     inputs = [meta_args[i] if i in meta_args else concrete_args[i] for i in sequence]
-    inputs = [i.cuda() if isinstance(i, torch.Tensor) else i for i in inputs]
     model.cuda().eval()
     gm.eval()
     with torch.no_grad():
+        if print_mem:
+            torch.cuda.reset_peak_memory_stats()
+            now_mem = torch.cuda.memory_allocated() / 1024**2
+        inputs = [i.cuda() if isinstance(i, torch.Tensor) else i for i in inputs]
         out_gm = gm(*inputs)
+        if print_mem:
+            new_max_mem = torch.cuda.max_memory_allocated() / 1024**2
+            print("mem: %.2fMB" % (new_max_mem - now_mem))
         out_model = model(*inputs)
     assert_allclose(out_model, out_gm)
     return chunks
@@ -98,6 +105,7 @@ def run_test(
     data: tuple,
     max_memory: int,
     print_code: bool,
+    print_est_mem: bool,
     print_mem: bool,
     print_progress: bool,
     get_chunk_target: Any = None,
@@ -119,6 +127,7 @@ def run_test(
         data=data,
         max_memory=max_memory,
         print_code=print_code,
+        print_est_mem=print_est_mem,
         print_mem=print_mem,
         print_progress=print_progress,
     )
