@@ -66,14 +66,14 @@ def assert_codegen_run(
 
     # assert result
     inputs = [meta_args[i] if i in meta_args else concrete_args[i] for i in sequence]
+    inputs = [i.cuda() if isinstance(i, torch.Tensor) else i for i in inputs]
     model.cuda().eval()
     gm.eval()
     with torch.no_grad():
         if print_mem:
             torch.cuda.reset_peak_memory_stats()
             now_mem = torch.cuda.memory_allocated() / 1024**2
-        inputs = [i.cuda() if isinstance(i, torch.Tensor) else i for i in inputs]
-        out_gm = gm(*inputs)
+        out_gm = gm(*[i.clone() if isinstance(i, torch.Tensor) else i for i in inputs])
         if print_mem:
             new_max_mem = torch.cuda.max_memory_allocated() / 1024**2
             print("mem: %.2fMB" % (new_max_mem - now_mem))
