@@ -115,7 +115,8 @@ def benchmark_evoformer_stack():
     data_args = [128, 256]
     print("")
     _benchmark_evoformer_stack_origin(data_args, get_model, get_data)
-    _benchmark_evoformer_stack_gm(data_args, 500, get_model, get_data)
+    _benchmark_evoformer_stack_gm(data_args, 600, get_model, get_data)
+    _benchmark_evoformer_stack_gm(data_args, 400, get_model, get_data)
     _benchmark_evoformer_stack_gm(data_args, None, get_model, get_data)
 
 
