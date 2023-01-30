@@ -91,7 +91,7 @@ def _gen_loop_start(chunk_input: List[Node], chunk_output: List[Node], chunk_oup
 
 
 def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node], node_list: List[Node],
-                  chunk_outputs_idx: int) -> str:
+                  chunk_outputs_idx: int, chunk_outputs_non_tensor: List[Node]) -> str:
     """
     Generate chunk loop end
 
@@ -113,6 +113,8 @@ def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node]
     for chunk_input in chunk_inputs + chunk_non_compute_inputs:
         if all([find_idx_by_name(user.name, node_list) <= chunk_outputs_idx for user in chunk_input.users.keys()]):
             context += ";  %s = None" % chunk_input.name
+    for chunk_output_non_tensor, chunk_output_non_tensor_val in chunk_outputs_non_tensor.items():
+        context += ";  %s = %s" % (chunk_output_non_tensor.name, chunk_output_non_tensor_val)
     context += "\n"
     return context
 
@@ -234,6 +236,7 @@ def emit_code_with_chunk(
 
     # chunk outputs
     chunk_outputs = [i["outputs"] for i in chunk_infos]
+    chunk_outputs_non_tensor = [i["outputs_non_tensor"] for i in chunk_infos]
     chunk_outputs_dim = [i["outputs_dim"] for i in chunk_infos]
 
     node_list = search_chunk.reorder_graph.reorder_node_list(node_list)
@@ -276,12 +279,8 @@ def emit_code_with_chunk(
         # generate chunk region end
         if node_idx in chunk_ends:
             body.append(
-                _gen_loop_end(
-                    chunk_inputs[region_idx],
-                    chunk_inputs_non_chunk[region_idx],
-                    node_list,
-                    chunk_ends[region_idx],
-                ))
+                _gen_loop_end(chunk_inputs[region_idx], chunk_inputs_non_chunk[region_idx], node_list,
+                              chunk_ends[region_idx], chunk_outputs_non_tensor[region_idx]))
             within_chunk_region = False
 
         node_idx += 1

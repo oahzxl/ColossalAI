@@ -71,13 +71,24 @@ def assert_codegen_run(
     with torch.no_grad():
         out_gm = gm(*inputs)
         out_model = model(*inputs)
-    for k in out_model.keys():
-        if torch.is_tensor(out_gm[k]):
-            assert torch.equal(
-                out_model[k], out_gm[k]
-            ), f'{model.__class__.__name__} has incorrect output {k}, expect {out_model[k]}, but got {out_gm[k]}'
-
+    assert_allclose(out_model, out_gm)
     return chunks
+
+
+def assert_allclose(out_model: Any, out_gm: Any) -> None:
+    """
+    assert allclose for out
+    """
+    if isinstance(out_model, torch.Tensor):
+        assert torch.allclose(out_model, out_gm,
+                              atol=1e-4), "fx_out doesn't comply with original output, diff is %.2e" % torch.mean(
+                                  torch.abs(out_model - out_gm))
+    elif isinstance(out_model, dict):
+        for k in out_model.keys():
+            assert_allclose(out_model[k], out_gm[k])
+    elif isinstance(out_model, tuple) or isinstance(out_model, list) or isinstance(out_model, set):
+        for i, j in zip(out_model, out_gm):
+            assert_allclose(i, j)
 
 
 def run_test(

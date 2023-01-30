@@ -177,3 +177,17 @@ def find_tensor_node(node_list: List[Node]) -> List[Node]:
         if get_node_shape(node) is not None:
             out.append(node)
     return out
+
+
+def find_tensor_shape_node(node_list: List[Node]) -> List[Node]:
+    """
+    find tensor and shape nodes from a node list
+    """
+    out = []
+    for node in node_list:
+        if get_node_shape(node) is not None:
+            out.append(node)
+        elif len(node.meta['fwd_out']) > 0 and isinstance(node.meta['fwd_out'], list) and isinstance(
+                node.meta['fwd_out'][0], int):
+            out.append(node)
+    return out

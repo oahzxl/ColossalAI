@@ -7,7 +7,7 @@ from .utils import (
     find_chunk_all_input_nodes,
     find_chunk_compute_input_and_output_nodes,
     find_idx_by_name,
-    find_tensor_node,
+    find_tensor_shape_node,
     flat_list,
     get_node_name,
     get_node_shape,
@@ -372,13 +372,14 @@ class TraceFlow(object):
             "inputs_non_chunk": [],
             "inputs_dim": [],
             "outputs": [self.trace_indice.node_list[end_idx]],
+            "outputs_non_tensor": {},
             "outputs_dim": [end_dim],
             "node_chunk_dim": all_node_info,
             "args": {},
         }
 
         # find chunk info for other outputs
-        if len(find_tensor_node(outputs)) > 1:
+        if len(find_tensor_shape_node(outputs)) > 1:
             chunk_info = self._get_other_output_info(outputs, start_idx, start_dim, end_idx, end_dim, chunk_info)
             if chunk_info is None:
                 return None
@@ -413,6 +414,9 @@ class TraceFlow(object):
                 continue
             # skip non tensor
             if get_node_shape(output) is None:
+                # log shape tensor
+                if len(output.meta['fwd_out']) > 0 and isinstance(output.meta['fwd_out'][0], int):
+                    chunk_info["outputs_non_tensor"][output] = str(output.meta['fwd_out'])
                 continue
             # loop every dim of outputs, try to find a legal one
             for output_dim in range(len(get_node_shape(output))):
