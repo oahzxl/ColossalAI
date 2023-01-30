@@ -25,7 +25,7 @@ if AUTOCHUNK_AVAILABLE:
 from torch.fx.node import Argument, Node, _get_qualified_name, _type_repr, map_arg
 
 from .search_chunk import SearchChunk
-from .utils import delete_free_var_from_last_use, find_idx_by_name, get_logger, get_node_shape
+from .utils import delete_free_var_from_last_use, find_idx_by_name, get_logger, get_node_name, get_node_shape
 
 
 def _gen_chunk_slice_dim(chunk_dim: int, chunk_indice_name: str, shape: List) -> str:
@@ -73,9 +73,16 @@ def _gen_loop_start(chunk_input: List[Node], chunk_output: List[Node], chunk_oup
 
     context = ""
     for i in range(len(chunk_output)):
-        out_str = str(list(get_node_shape(chunk_output[i])))
-        context += "%s = torch.empty(%s, dtype=%s.dtype, device=%s.device);  " % (chunk_output[i].name, out_str,
-                                                                                  input_node.name, input_node.name)
+        shape_str = str(list(get_node_shape(chunk_output[i])))
+        if get_node_name(chunk_output[i]) == "split":
+            tensor_str = "torch.empty(%s, dtype=%s.dtype, device=%s.device), " % (shape_str, input_node.name,
+                                                                                  input_node.name)
+            tensor_str = tensor_str * len(chunk_output[i].meta['tensor_meta'])
+            tensor_str = "[" + tensor_str[:-2] + "]"
+            context += "%s = %s;  " % (chunk_output[i].name, tensor_str)
+        else:
+            context += "%s = torch.empty(%s, dtype=%s.dtype, device=%s.device);  " % (chunk_output[i].name, shape_str,
+                                                                                      input_node.name, input_node.name)
 
     out_shape = get_node_shape(chunk_output[0])
     chunk_shape = out_shape[chunk_ouput_dim[0]]
@@ -83,8 +90,8 @@ def _gen_loop_start(chunk_input: List[Node], chunk_output: List[Node], chunk_oup
     return context
 
 
-def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node], chunk_outputs: Node,
-                  chunk_outputs_dim: int, node_list: List[Node], chunk_outputs_idx: int) -> str:
+def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node], node_list: List[Node],
+                  chunk_outputs_idx: int) -> str:
     """
     Generate chunk loop end
 
@@ -158,9 +165,9 @@ def _replace_ones_like(
 
 
 def _add_node_slice(
-    chunk_inputs: List[Node],
+    chunk_nodes: List[Node],
     region_idx: int,
-    chunk_inputs_dim: Dict,
+    chunk_nodes_dim: Dict,
     node_idx: int,
     body: List[str],
     node: Node,
@@ -168,17 +175,26 @@ def _add_node_slice(
     """
     add chunk slice for input nodes
     """
-    for input_node_idx, input_node in enumerate(chunk_inputs[region_idx]):
-        if isinstance(chunk_inputs_dim[region_idx][input_node_idx], dict):
-            for idx, dim in chunk_inputs_dim[region_idx][input_node_idx].items():
+    for chunk_node_idx, chunk_node in enumerate(chunk_nodes[region_idx]):
+        # inputs node
+        if isinstance(chunk_nodes_dim[region_idx][chunk_node_idx], dict):
+            for idx, dim in chunk_nodes_dim[region_idx][chunk_node_idx].items():
                 if idx == node_idx:
-                    chunk_slice = _gen_chunk_slice_dim(dim[0], "chunk_idx", get_node_shape(input_node))
-                    body[-1] = _replace_name(body[-1], input_node.name, input_node.name + chunk_slice)
+                    chunk_slice = _gen_chunk_slice_dim(dim[0], "chunk_idx", get_node_shape(chunk_node))
+                    body[-1] = _replace_name(body[-1], chunk_node.name, chunk_node.name + chunk_slice)
+        # outputs node
         else:
-            if input_node.name == node.name or (input_node.name in [i.name for i in node.all_input_nodes]):
-                chunk_slice = _gen_chunk_slice_dim(chunk_inputs_dim[region_idx][input_node_idx], "chunk_idx",
-                                                   get_node_shape(input_node))
-                body[-1] = _replace_name(body[-1], input_node.name, input_node.name + chunk_slice)
+            if chunk_node.name == node.name or (chunk_node.name in [i.name for i in node.all_input_nodes]):
+                chunk_slice = _gen_chunk_slice_dim(chunk_nodes_dim[region_idx][chunk_node_idx], "chunk_idx",
+                                                   get_node_shape(chunk_node))
+                if get_node_name(chunk_node) == "split":
+                    split_chunk_slice = ""
+                    for i in range(len(chunk_node.meta['tensor_meta'])):
+                        split_chunk_slice += "%s[%d]%s, " % (chunk_node.name, i, chunk_slice)
+                    split_chunk_slice = split_chunk_slice[:-2]
+                    body[-1] = _replace_name(body[-1], chunk_node.name, split_chunk_slice)
+                else:
+                    body[-1] = _replace_name(body[-1], chunk_node.name, chunk_node.name + chunk_slice)
     return body
 
 
@@ -263,8 +279,6 @@ def emit_code_with_chunk(
                 _gen_loop_end(
                     chunk_inputs[region_idx],
                     chunk_inputs_non_chunk[region_idx],
-                    chunk_outputs[region_idx],
-                    chunk_outputs_dim[region_idx],
                     node_list,
                     chunk_ends[region_idx],
                 ))
