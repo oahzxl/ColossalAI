@@ -472,7 +472,7 @@ class TraceFlow(object):
             if any(i == get_node_name(node) for i in ["reshape", "view"]):
                 if node in chunk_info["args"]["prepose_nodes"]:
                     continue
-                if node.args[0] in chunk_info["inputs"] or node.args[0] in chunk_info["inputs_non_chunk"]:
+                if node.args[0] in chunk_info["inputs_non_chunk"]:
                     continue
                 reshape_args = flat_list(node.args[1:])
                 if len(reshape_args) == 1 and get_node_shape(reshape_args[0]) is None and len(
