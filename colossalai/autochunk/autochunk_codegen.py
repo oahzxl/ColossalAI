@@ -25,7 +25,7 @@ if AUTOCHUNK_AVAILABLE:
 from torch.fx.node import Argument, Node, _get_qualified_name, _type_repr, map_arg
 
 from .search_chunk import SearchChunk
-from .utils import delete_free_var_from_last_use, find_idx_by_name, get_logger, get_node_name, get_node_shape
+from .utils import delete_free_var_from_last_use, get_logger, get_node_name, get_node_shape
 
 
 def _gen_chunk_slice_dim(chunk_dim: int, chunk_indice_name: str, shape: List) -> str:
@@ -91,7 +91,7 @@ def _gen_loop_start(chunk_input: List[Node], chunk_output: List[Node], chunk_oup
 
 
 def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node], node_list: List[Node],
-                  chunk_outputs_idx: int, chunk_outputs_non_tensor: List[Node]) -> str:
+                  chunk_outputs_idx: int, chunk_outputs_non_tensor: List[Node], search_chunk: SearchChunk) -> str:
     """
     Generate chunk loop end
 
@@ -111,7 +111,7 @@ def _gen_loop_end(chunk_inputs: List[Node], chunk_non_compute_inputs: List[Node]
     context = "chunk_size = None"
     # determine if its the last use for chunk input
     for chunk_input in chunk_inputs + chunk_non_compute_inputs:
-        if all([find_idx_by_name(user.name, node_list) <= chunk_outputs_idx for user in chunk_input.users.keys()]):
+        if all([search_chunk.node_mgr.find_node_idx(user) <= chunk_outputs_idx for user in chunk_input.users.keys()]):
             context += ";  %s = None" % chunk_input.name
     for chunk_output_non_tensor, chunk_output_non_tensor_val in chunk_outputs_non_tensor.items():
         context += ";  %s = %s" % (chunk_output_non_tensor.name, chunk_output_non_tensor_val)
@@ -155,7 +155,7 @@ def _replace_ones_like(
     add chunk slice for new tensor op such as ones like
     """
     if "ones_like" in node.name:
-        meta_node = search_chunk.trace_indice.node_list[node_idx]
+        meta_node = search_chunk.node_mgr.get_node_by_idx(node_idx)
         chunk_dim = chunk_infos[region_idx]["node_chunk_dim"][meta_node]["chunk_dim"]
         if get_node_shape(meta_node)[chunk_dim] != 1:
             source_node = meta_node.args[0].args[0]
@@ -280,7 +280,7 @@ def emit_code_with_chunk(
         if node_idx in chunk_ends:
             body.append(
                 _gen_loop_end(chunk_inputs[region_idx], chunk_inputs_non_chunk[region_idx], node_list,
-                              chunk_ends[region_idx], chunk_outputs_non_tensor[region_idx]))
+                              chunk_ends[region_idx], chunk_outputs_non_tensor[region_idx], search_chunk))
             within_chunk_region = False
 
         node_idx += 1

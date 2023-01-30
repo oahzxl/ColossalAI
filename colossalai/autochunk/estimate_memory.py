@@ -6,7 +6,7 @@ from torch.fx.node import Node, map_arg
 
 from colossalai.fx.profiler import activation_size, parameter_size
 
-from .utils import delete_free_var_from_last_use, find_idx_by_name, get_node_shape, is_non_memory_node
+from .utils import NodeMgr, delete_free_var_from_last_use, get_node_shape, is_non_memory_node
 
 
 class EstimateMemory(object):
@@ -14,8 +14,8 @@ class EstimateMemory(object):
     Estimate memory with chunk
     """
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, node_mgr: NodeMgr) -> None:
+        self.node_mgr = node_mgr
 
     def _get_meta_node_size(self, x):
         x = x.meta["tensor_meta"]
@@ -78,7 +78,7 @@ class EstimateMemory(object):
         nodes_to_delete = []
         for chunk_input in chunk_inputs + chunk_inputs_non_chunk:
             chunk_input_users = chunk_input.users.keys()
-            chunk_input_users_idx = [find_idx_by_name(i.name, node_list) for i in chunk_input_users]
+            chunk_input_users_idx = [self.node_mgr.find_node_idx(i) for i in chunk_input_users]
             if all(i <= chunk_end_idx for i in chunk_input_users_idx):
                 if chunk_input not in nodes_to_delete:
                     nodes_to_delete.append(chunk_input)

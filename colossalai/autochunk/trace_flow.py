@@ -4,9 +4,9 @@ from torch.fx.node import Node
 
 from .trace_indice import TraceIndice
 from .utils import (
+    NodeMgr,
     find_chunk_all_input_nodes,
     find_chunk_compute_input_and_output_nodes,
-    find_idx_by_name,
     find_tensor_shape_node,
     flat_list,
     get_node_name,
@@ -17,8 +17,9 @@ from .utils import (
 
 class TraceFlow(object):
 
-    def __init__(self, trace_indice: TraceIndice) -> None:
+    def __init__(self, trace_indice: TraceIndice, node_mgr: NodeMgr) -> None:
         self.trace_indice = trace_indice
+        self.node_mgr = node_mgr
 
     def check_index_source(self, start_dim, start_node, start_idx, end_dim, end_node):
         """
@@ -33,7 +34,7 @@ class TraceFlow(object):
             bool: True if check pass
         """
         # we use start_node_idx instead of real chunk index
-        start_node_idx = find_idx_by_name(start_node.name, self.trace_indice.node_list)
+        start_node_idx = self.node_mgr.find_node_idx(start_node)
         end_node_trace = self.trace_indice._find_trace_from_node(end_node)
         end_node_trace_source = end_node_trace["source"][end_dim]
         sorted_source = sorted(end_node_trace_source.items(), key=lambda d: d[0], reverse=True)
@@ -66,14 +67,14 @@ class TraceFlow(object):
     def get_node_chunk_dim(self, node_from, node_from_dim, node_to):
         node_from_source = self.trace_indice._find_source_trace_from_node(node_from)
         dim_source = node_from_source[node_from_dim]
-        node_to_idx = find_idx_by_name(node_to.name, self.trace_indice.node_list)
+        node_to_idx = self.node_mgr.find_node_idx(node_to)
         for k, v in dim_source.items():
             if k == node_to_idx:
                 return v
         return None
 
     def _find_inherit_dim(self, input_node, input_dim, node):
-        input_node_idx = find_idx_by_name(input_node.name, self.trace_indice.node_list)
+        input_node_idx = self.node_mgr.find_node_idx(input_node)
         node_trace_source = self.trace_indice._find_source_trace_from_node(node)
         for node_dim in range(len(get_node_shape(node))):
             if (input_node_idx in node_trace_source[node_dim]
@@ -112,7 +113,7 @@ class TraceFlow(object):
         Returns:
             bool: True if this node can be added to the flow, vice versa.
         """
-        arg_idx = find_idx_by_name(arg_node.name, self.trace_indice.node_list)
+        arg_idx = self.node_mgr.find_node_idx(arg_node)
         # arg in chunk range or be inputs
         if not (start_idx <= arg_idx < end_idx):
             return True
@@ -158,7 +159,7 @@ class TraceFlow(object):
         return True
 
     def _get_all_node_info(self, end_dim, start_idx, end_idx):
-        cur_node_list = [self.trace_indice.node_list[end_idx]]    # start from the last node
+        cur_node_list = [self.node_mgr.get_node_by_idx(end_idx)]    # start from the last node
         all_node_info = {cur_node_list[0]: {"chunk_dim": end_dim, "fix_dim": []}}
 
         while len(cur_node_list) > 0:
@@ -203,7 +204,7 @@ class TraceFlow(object):
                         for arg in arg_list:
                             if get_node_shape(arg) is None:
                                 continue
-                            if not (start_idx <= find_idx_by_name(arg.name, self.trace_indice.node_list) < end_idx):
+                            if not (start_idx <= self.node_mgr.find_node_idx(arg) < end_idx):
                                 continue
                             arg_chunk_dim = all_node_info[arg]["chunk_dim"]
                             arg_fix_dim = all_node_info[arg]["fix_dim"]
@@ -241,7 +242,7 @@ class TraceFlow(object):
         remove_inputs = []
         for input_node in inputs:
             input_dict = {}
-            input_node_idx = find_idx_by_name(input_node.name, self.trace_indice.node_list)
+            input_node_idx = self.node_mgr.find_node_idx(input_node)
             for user in input_node.users.keys():
                 # skip non compute
                 if is_non_compute_node(user):
@@ -249,7 +250,7 @@ class TraceFlow(object):
                 # untraced node, mostly non compute
                 if user not in all_node_info:
                     continue
-                user_idx = find_idx_by_name(user.name, self.trace_indice.node_list)
+                user_idx = self.node_mgr.find_node_idx(user)
                 if start_idx <= user_idx <= end_idx:
                     chunk_dim = all_node_info[user]["chunk_dim"]
                     if chunk_dim is not None:
@@ -288,11 +289,11 @@ class TraceFlow(object):
         for node, node_info in all_node_info.items():
             if node_info["chunk_dim"] is None:
                 maybe_prepose_nodes.append(node)
-        for node in self.trace_indice.node_list[start_idx:end_idx]:
+        for node in self.node_mgr.get_node_slice_by_idx(start_idx, end_idx):
             if node not in all_node_info and node not in chunk_info["outputs"]:
                 maybe_prepose_nodes.append(node)
         maybe_prepose_nodes.sort(
-            key=lambda x: find_idx_by_name(x.name, self.trace_indice.node_list),
+            key=lambda x: self.node_mgr.find_node_idx(x),
             reverse=True,
         )    # from last node to first node
         prepose_nodes = []
@@ -315,8 +316,7 @@ class TraceFlow(object):
                         if type(cur_prepose_node_arg) != type(cur_prepose_node):
                             continue
                         # out of loop
-                        if not (start_idx <= find_idx_by_name(cur_prepose_node_arg.name, self.trace_indice.node_list) <
-                                end_idx):
+                        if not (start_idx <= self.node_mgr.find_node_idx(cur_prepose_node_arg) < end_idx):
                             continue
                         # compute op in loop
                         elif cur_prepose_node_arg in all_node_info:
@@ -340,12 +340,12 @@ class TraceFlow(object):
                     if n in maybe_prepose_nodes:
                         maybe_prepose_nodes.remove(n)
         # sort by index
-        prepose_nodes.sort(key=lambda x: find_idx_by_name(x.name, self.trace_indice.node_list))
+        prepose_nodes.sort(key=lambda x: self.node_mgr.find_node_idx(x))
         chunk_info["args"]["prepose_nodes"] = prepose_nodes
 
     def _get_non_chunk_inputs(self, chunk_info, start_idx, end_idx):
         # we need to log input nodes to avoid deleteing them in the loop
-        chunk_node_list = self.trace_indice.node_list[start_idx:end_idx + 1]
+        chunk_node_list = self.node_mgr.get_node_slice_by_idx(start_idx, end_idx + 1)
         # also need to get some prepose node's arg out of non_chunk_inputs
         for n in chunk_info["args"]["prepose_nodes"]:
             chunk_node_list.remove(n)
@@ -356,7 +356,8 @@ class TraceFlow(object):
         return chunk_info
 
     def flow_search(self, start_idx, start_dim, end_idx, end_dim):
-        inputs, outputs = find_chunk_compute_input_and_output_nodes(self.trace_indice.node_list[start_idx:end_idx + 1])
+        inputs, outputs = find_chunk_compute_input_and_output_nodes(
+            self.node_mgr.get_node_slice_by_idx(start_idx, end_idx + 1))
         # limit output num
         # if len(find_tensor_node(outputs)) > 3:
         #     return None
@@ -371,7 +372,7 @@ class TraceFlow(object):
             "inputs": [],
             "inputs_non_chunk": [],
             "inputs_dim": [],
-            "outputs": [self.trace_indice.node_list[end_idx]],
+            "outputs": [self.node_mgr.get_node_by_idx(end_idx)],
             "outputs_non_tensor": {},
             "outputs_dim": [end_dim],
             "node_chunk_dim": all_node_info,
@@ -404,11 +405,11 @@ class TraceFlow(object):
 
     def _get_other_output_info(self, outputs: List[Node], start_idx: int, start_dim: int, end_idx: int, end_dim: int,
                                chunk_info: Dict):
-        start_node = self.trace_indice.node_list[start_idx]
+        start_node = self.node_mgr.get_node_by_idx(start_idx)
         # loop all outputs
         for output in outputs:
             output_legal = False
-            output_idx = find_idx_by_name(output.name, self.trace_indice.node_list)
+            output_idx = self.node_mgr.find_node_idx(output)
             # skip the origin output
             if output_idx == end_idx:
                 continue
@@ -467,7 +468,7 @@ class TraceFlow(object):
         chunk_region = chunk_info["region"]
         reshape_size = {}
         chunk_shape = get_node_shape(chunk_info["outputs"][0])[chunk_info["outputs_dim"][0]]
-        for node in self.trace_indice.node_list[chunk_region[0]:chunk_region[1] + 1]:
+        for node in self.node_mgr.get_node_slice_by_idx(chunk_region[0], chunk_region[1] + 1):
             if any(i == get_node_name(node) for i in ["reshape", "view"]):
                 if node in chunk_info["args"]["prepose_nodes"]:
                     continue
@@ -515,7 +516,7 @@ class TraceFlow(object):
         if len(start_traces) > 1:    # TODO need to be removed
             return []
         end_trace = output_trace[end_idx]
-        end_node = self.trace_indice.node_list[end_idx]
+        end_node = self.node_mgr.get_node_by_idx(end_idx)
 
         chunk_infos = []
         for end_dim, _ in enumerate(end_trace["indice"]):

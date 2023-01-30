@@ -9,6 +9,59 @@ NON_COMPUTE_NAME = ["getattr", "eq", "_assert_is_none", "_assert", "finfo", "siz
 logger = get_dist_logger()
 
 
+class NodeMgr(object):
+
+    def __init__(self, gm) -> None:
+        self._node_list = list(gm.graph.nodes)
+        self._node_dict = {}
+        self._set_node_dict()
+
+    def _set_node_dict(self) -> None:
+        """
+        create a dict {node_name: node_idx}
+        """
+        self._node_dict.clear()
+        for idx, node in enumerate(self._node_list):
+            self._node_dict[node.name] = idx
+
+    def find_node_idx(self, node: Node) -> int:
+        """
+        find node's index
+        """
+        return self._node_dict[node.name]
+
+    def find_node_idx_by_name(self, node_name: str) -> int:
+        """
+        find node's index
+        """
+        return self._node_dict[node_name]
+
+    def get_node_by_idx(self, idx: int) -> Node:
+        """
+        get a node by index
+        """
+        return self._node_list[idx]
+
+    def get_node_slice_by_idx(self, start: int, end: int) -> List[Node]:
+        """
+        get a slice of node by index
+        """
+        return self._node_list[start:end]
+
+    def get_node_list(self) -> List:
+        """
+        get full node list
+        """
+        return self._node_list
+
+    def update_node_list(self, node_list: List) -> None:
+        """
+        update node list, reset node dict
+        """
+        self._node_list = node_list
+        self._set_node_dict()
+
+
 def get_logger() -> Any:
     return logger
 
@@ -82,7 +135,7 @@ def is_non_compute_node_except_placeholder_output(node: Node) -> bool:
     return is_non_compute_node_except_placeholder(node)
 
 
-def find_idx_by_name(name: str, nodes_list: List) -> int:
+def find_node_idx(name: str, nodes_list: List) -> int:
     for idx, node in enumerate(nodes_list):
         if node.name == name:
             return idx
