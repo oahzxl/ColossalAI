@@ -1,3 +1,5 @@
+import torch
+
 from .estimate_memory import EstimateMemory
 from .reorder_graph import ReorderGraph
 from .trace_indice import TraceIndice
@@ -50,6 +52,10 @@ class SelectChunk(object):
         if len(possible_chunk_regions) == 0:
             return None
 
+        # # get max possible chunk region
+        # max_possible_chunk_region = (min([i["region"][0] for i in possible_chunk_regions]),
+        #                              max([i["region"][1] for i in possible_chunk_regions]))
+
         # get mem for chunk region
         regions_dict = []
         for region in possible_chunk_regions:
@@ -58,12 +64,15 @@ class SelectChunk(object):
             cur_chunk_infos = chunk_infos + [cur_region]
             cur_mem = self.estimate_memory.estimate_chunk_inference_mem(cur_node_list, cur_chunk_infos)[0]
             cur_chunk_region_peak = cur_mem[cur_region["region"][0]:cur_region["region"][1] + 1]
+            # cur_chunk_region_peak = cur_mem[max_possible_chunk_region[0]:max_possible_chunk_region[1] + 1]
             cur_chunk_region_max_peak = max(cur_chunk_region_peak)
             if cur_chunk_region_max_peak < self.max_memory:
                 regions_dict.append({
                     "chunk_info": region,
                     "chunk_max_mem": cur_chunk_region_max_peak,
-                    "chunk_len": self._get_compute_node_num(region["region"][0], region["region"][1]),
+                    "chunk_origin_len": self._get_compute_node_num(region["region"][0], region["region"][1]),
+                    "chunk_len": self._get_compute_node_num(cur_region["region"][0], cur_region["region"][1]),
+                    "chunk_op": self._get_node_flops(cur_region["region"][0], cur_region["region"][1]),
                     "reorder_chunk_info": cur_region,
                     "reorder_node_list": cur_node_list,
                 })
@@ -72,9 +81,29 @@ class SelectChunk(object):
             raise RuntimeError("Search failed. Try a larger memory threshold.")
 
         # select the min chunk len
-        chunk_len = [i["chunk_len"] for i in regions_dict]
-        best_region_idx = chunk_len.index(min(chunk_len))
+        chunk_len = torch.tensor([i["chunk_len"] for i in regions_dict])
+        chunk_len = chunk_len / max(chunk_len)
+
+        chunk_op = torch.tensor([i["chunk_op"] for i in regions_dict])
+        chunk_op = chunk_op / max(chunk_op)
+
+        chunk_compute_ratio = chunk_len / chunk_op
+        chunk_compute_ratio = chunk_compute_ratio / max(chunk_compute_ratio)
+
+        chunk_dim = torch.tensor([i["chunk_info"]['outputs_dim'][0] for i in regions_dict])
+        chunk_dim = chunk_dim + 1
+
+        # # bad performance without chunk dim
+        # chunk_score = chunk_len + chunk_op + chunk_compute_ratio
+
+        chunk_score = chunk_len * chunk_compute_ratio * chunk_dim
+        best_region_idx = torch.argmin(chunk_score)
         best_region = regions_dict[best_region_idx]
+
+        # # origin strategy
+        # chunk_origin_len = torch.tensor([i["chunk_origin_len"] for i in regions_dict])
+        # best_region_idx = torch.argmin(chunk_origin_len)
+        # best_region = regions_dict[best_region_idx]
 
         # get max chunk size
         best_region = self._get_fit_chunk_size(best_region, chunk_infos)
@@ -118,12 +147,38 @@ class SelectChunk(object):
                 left = mid + gap
         return left
 
-    def _get_compute_node_num(self, start, end):
+    def _get_compute_node_num(self, start: int, end: int) -> int:
+        """
+        get compute node number in chunk region
+
+        Args:
+            start (int): start node index
+            end (int): end node index
+
+        Returns:
+            int: node num
+        """
         count = 0
         for i in self.node_mgr.get_node_slice_by_idx(start, end + 1):
             if not is_non_compute_node(i):
                 count += 1
         return count
+
+    def _get_node_flops(self, start: int, end: int) -> int:
+        """
+        get flops in chunk region
+
+        Args:
+            start (int): start node index
+            end (int): end node index
+
+        Returns:
+            int: flops
+        """
+        flops = 0
+        for i in self.node_mgr.get_node_slice_by_idx(start, end + 1):
+            flops += i.fwd_flop
+        return flops
 
     def _select_min_memory_chunk_region(self, possible_chunk_regions, chunk_infos):
         # remove illegal regions
@@ -154,7 +209,6 @@ class SelectChunk(object):
             regions_dict_list.append({
                 "chunk_info": region,
                 "chunk_max_mem": cur_chunk_region_max_peak,
-                "chunk_len": self._get_compute_node_num(region["region"][0], region["region"][1]),
                 "reorder_chunk_info": cur_region,
                 "reorder_node_list": cur_node_list,
             })
