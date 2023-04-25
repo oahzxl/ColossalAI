@@ -61,7 +61,7 @@ def _benchmark_autochunk_gpt_gm(
     model.cuda()
 
     # bench
-    para_mem = float(parameter_size(model)) / 1024**2 * 6
+    para_mem = float(parameter_size(model)) / 1024**2 * 16
     act_mem = _benchmark_memory(gm, inputs)
     speed = _benchmark_speed(gm, inputs)
     print("gpt autochunk, time: %.4fs, act mem: %.2fMB, para mem: %.2fMB, all mem: %.2fMB" %
@@ -83,7 +83,7 @@ def _benchmark_autochunk_gpt_origin(
     model.cuda().eval()
 
     # bench
-    para_mem = float(parameter_size(model)) / 1024**2 * 6
+    para_mem = float(parameter_size(model)) / 1024**2 * 16
     act_mem = _benchmark_memory(model, inputs)
     speed = _benchmark_speed(model, inputs)
     print("gpt origin, time: %.4fs, act mem: %.2fMB, para mem: %.2fMB, all mem: %.2fMB" %
@@ -142,8 +142,9 @@ if __name__ == "__main__":
         port=free_port(),
         backend="nccl",
     )
-    benchmark_autochunk_gpt(batch=1, seq=1024, n_embd=768, n_head=12)
-    benchmark_autochunk_gpt(batch=1, seq=2048, n_embd=768, n_head=12)
-    benchmark_autochunk_gpt(batch=1, seq=4096, n_embd=768, n_head=12)
-    benchmark_autochunk_gpt(batch=1, seq=6144, n_embd=768, n_head=12)
-    benchmark_autochunk_gpt(batch=1, seq=8192, n_embd=768, n_head=12)
+    benchmark_autochunk_gpt(batch=1, seq=512, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=1, seq=1024, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=1, seq=2048, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=1, seq=4096, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=1, seq=6144, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=1, seq=8192, n_embd=2560, n_head=32)
