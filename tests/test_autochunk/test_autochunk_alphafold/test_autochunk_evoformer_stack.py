@@ -41,11 +41,11 @@ def get_model():
     return model
 
 
-def get_data(msa_len: int, pair_len: int) -> Tuple[List, List]:
-    node = torch.randn(1, msa_len, pair_len, 256).cuda()
-    node_mask = torch.randn(1, msa_len, pair_len).cuda()
-    pair = torch.randn(1, pair_len, pair_len, 128).cuda()
-    pair_mask = torch.randn(1, pair_len, pair_len).cuda()
+def get_data(msa_len: int, pair_len: int, batch_size=1) -> Tuple[List, List]:
+    node = torch.randn(batch_size, msa_len, pair_len, 256).cuda()
+    node_mask = torch.randn(batch_size, msa_len, pair_len).cuda()
+    pair = torch.randn(batch_size, pair_len, pair_len, 128).cuda()
+    pair_mask = torch.randn(batch_size, pair_len, pair_len).cuda()
 
     meta_args = [
         ("m", node),
