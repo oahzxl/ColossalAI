@@ -121,14 +121,16 @@ def benchmark_autochunk_gpt(batch=1, seq=512, n_embd=768, n_head=12):
     shape = [batch, seq]
     print("\nbatch: %d, seq: %d, n_embd: %d, n_head: %d" % (batch, seq, n_embd, n_head))
     max_mem = _benchmark_autochunk_gpt_origin(model, get_data(shape))
-    for ratio in [0.5, 0.4, 0.3, 0.2]:
+    ratio = 0.6
+    while ratio > 0:
         try:
             _benchmark_autochunk_gpt_gm(model, get_data(shape), max_mem * ratio)
-        except RuntimeError as e:
+        except Exception as e:
             if e.args[0] == 'Search failed. Try a larger memory threshold.':
                 break
-        except Exception as e:
-            raise e
+            else:
+                raise e
+        ratio -= 0.04
     _benchmark_autochunk_gpt_gm(model, get_data(shape), None)
 
 
@@ -142,9 +144,7 @@ if __name__ == "__main__":
         port=free_port(),
         backend="nccl",
     )
-    benchmark_autochunk_gpt(batch=1, seq=512, n_embd=2560, n_head=32)
-    benchmark_autochunk_gpt(batch=1, seq=1024, n_embd=2560, n_head=32)
     benchmark_autochunk_gpt(batch=1, seq=2048, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=4, seq=2048, n_embd=2560, n_head=32)
+    benchmark_autochunk_gpt(batch=8, seq=2048, n_embd=2560, n_head=32)
     benchmark_autochunk_gpt(batch=1, seq=4096, n_embd=2560, n_head=32)
-    benchmark_autochunk_gpt(batch=1, seq=6144, n_embd=2560, n_head=32)
-    benchmark_autochunk_gpt(batch=1, seq=8192, n_embd=2560, n_head=32)

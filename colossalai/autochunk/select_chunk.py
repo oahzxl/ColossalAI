@@ -3,7 +3,7 @@ import torch
 from .estimate_memory import EstimateMemory
 from .reorder_graph import ReorderGraph
 from .trace_indice import TraceIndice
-from .utils import NodeMgr, is_non_compute_node
+from .utils import NodeMgr, get_node_shape, is_non_compute_node
 
 
 class SelectChunk(object):
@@ -97,16 +97,30 @@ class SelectChunk(object):
         # chunk_score = chunk_len + chunk_op + chunk_compute_ratio
 
         chunk_score = chunk_len * chunk_compute_ratio * chunk_dim
-        best_region_idx = torch.argmin(chunk_score)
-        best_region = regions_dict[best_region_idx]
-
+        best_score, best_regions = torch.topk(chunk_score, min(10, len(chunk_score)), largest=False)
+        best_regions = [regions_dict[i] for i in best_regions]
+        chunk_sizes = []
+        for i in range(len(best_regions)):
+            best_regions[i] = self._get_fit_chunk_size(best_regions[i], chunk_infos)
+            cur_chunk_size = best_regions[i]["chunk_size"]
+            cur_output_size = list(get_node_shape(best_regions[i]["outputs"][0]))
+            cur_output_dim = best_regions[i]["outputs_dim"][0]
+            cur_output_size[cur_output_dim] = cur_chunk_size
+            chunk_size = 1
+            for i in cur_output_size:
+                chunk_size *= i
+            chunk_sizes.append(chunk_size)
+        chunk_sizes = max(chunk_sizes) / torch.tensor(chunk_sizes)
+        final_score = best_score * chunk_sizes
+        best_region = torch.argmin(final_score)
+        best_region = best_regions[best_region]
         # # origin strategy
         # chunk_origin_len = torch.tensor([i["chunk_origin_len"] for i in regions_dict])
         # best_region_idx = torch.argmin(chunk_origin_len)
         # best_region = regions_dict[best_region_idx]
 
         # get max chunk size
-        best_region = self._get_fit_chunk_size(best_region, chunk_infos)
+
         return best_region
 
     def _get_fit_chunk_size(self, chunk_region_dict, chunk_infos):

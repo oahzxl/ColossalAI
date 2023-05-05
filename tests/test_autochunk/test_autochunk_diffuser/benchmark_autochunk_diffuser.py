@@ -120,14 +120,16 @@ def benchmark_autochunk_unet(batch=1, height=448, width=448):
 
     print("\nbatch: %d, height: %d, width: %d" % (batch, height, width))
     max_mem = _benchmark_autochunk_unet_origin(model, get_data(latent_shape))
-    for ratio in [0.5, 0.4, 0.3, 0.2]:
+    ratio = 0.6
+    while ratio > 0:
         try:
             _benchmark_autochunk_unet_gm(model, get_data(latent_shape), max_mem * ratio)
-        except RuntimeError as e:
+        except Exception as e:
             if e.args[0] == 'Search failed. Try a larger memory threshold.':
                 break
-        except Exception as e:
-            raise e
+            else:
+                raise e
+        ratio -= 0.04
     _benchmark_autochunk_unet_gm(model, get_data(latent_shape), None)
 
 
@@ -142,6 +144,5 @@ if __name__ == "__main__":
         backend="nccl",
     )
     benchmark_autochunk_unet(batch=1, height=224 * 3, width=224 * 3)
-    benchmark_autochunk_unet(batch=1, height=224 * 4, width=224 * 4)
-    benchmark_autochunk_unet(batch=1, height=224 * 5, width=224 * 5)
-    benchmark_autochunk_unet(batch=1, height=224 * 6, width=224 * 6)
+    benchmark_autochunk_unet(batch=4, height=224 * 3, width=224 * 3)
+    benchmark_autochunk_unet(batch=8, height=224 * 3, width=224 * 3)
