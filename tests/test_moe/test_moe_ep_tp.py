@@ -1,69 +1,63 @@
 import pytest
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 
 import colossalai
 from colossalai.context.moe_context import MOE_CONTEXT
-from colossalai.nn.layer.moe import EPExperts, MoeLayer, Top1Router, UniformNoiseGenerator
+from colossalai.nn.layer.moe import MoeModule
 from colossalai.testing import assert_equal_in_group, rerun_if_address_is_in_use, spawn
 from colossalai.utils import get_current_device
 from colossalai.utils.moe import sync_moe_model_param
-from tests.test_moe.moe_utils import MoeGradientHandler
+from tests.test_moe.moe_utils import MoeGradientHandler, sync_tp_from_ep
 
 BATCH_SIZE = 4
-DIM = 16
+DIM = 4
 
 
 def run_test(rank, world_size, port):
     colossalai.launch(config=dict(), rank=rank, world_size=world_size, host='localhost', port=port, backend='nccl')
-    expert_factor = dict(hidden_size=DIM, intermediate_size=DIM * 2)
-
     MOE_CONTEXT.setup(42)    # MOE initialization
-    noisy_func = UniformNoiseGenerator()
-    router = Top1Router(noisy_func=noisy_func)
-    num_experts_list = [1, 2, 4]
-    layer_list = []
-    for num_experts in num_experts_list:
-        exp = EPExperts(num_experts, **expert_factor)
-        moe_layer = MoeLayer(DIM, num_experts, router, exp)
-        layer_list.append(moe_layer)
 
-    model = nn.ModuleList(layer_list)
-    model = model.to(get_current_device())
-    sync_moe_model_param(model)
+    ep_model = MoeModule(num_experts=4, expert_parallel="EP", hidden_size=DIM, intermediate_size=DIM)
+    tp_model = MoeModule(num_experts=4, expert_parallel="TP", hidden_size=DIM, intermediate_size=DIM)
+    ep_model = ep_model.to(get_current_device())
+    tp_model = tp_model.to(get_current_device())
 
+    # sync ep param
+    sync_moe_model_param(ep_model)
     dist_dict = MOE_CONTEXT.parallel_info_dict
-    assert_equal_in_group(layer_list[0].experts.w1.data, dist_dict[1].dp_group)
-    assert_equal_in_group(layer_list[1].experts.w1.data, dist_dict[2].dp_group)
-    # MoE model synchronization passed
-
-    grad_handler = MoeGradientHandler(model, 0)
+    assert_equal_in_group(ep_model.moe_layer.experts.wi.data, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.moe_layer.experts.wo.data, dist_dict[2].dp_group)
+    grad_handler = MoeGradientHandler(ep_model)
+    # sync tp param
+    sync_tp_from_ep(tp_model, ep_model)
 
     rank = dist.get_rank()
-    torch.cuda.manual_seed(78 + rank)
-    data = torch.randn(BATCH_SIZE, DIM, device=get_current_device())
-    grad = torch.randn_like(data)
+    torch.cuda.manual_seed(78)
+    tp_data = torch.randn(BATCH_SIZE, DIM, device=get_current_device())
+    ep_data = tp_data.detach()[2 * rank:2 * (rank + 1)]
 
+    out_tp = tp_model(tp_data)[0]
     MOE_CONTEXT.reset_loss()
-    for layer in layer_list:
-        data, _ = layer(data)
-    data.backward(grad)
+    out_ep = ep_model(ep_data)[0]
+    MOE_CONTEXT.reset_loss()
+    assert torch.allclose(out_ep, out_tp[2 * rank:2 * (rank + 1)])
+
+    out_tp.mean().backward()
+    out_ep.mean().backward()
     grad_handler.handle_gradient()
 
-    assert_equal_in_group(layer_list[0].experts.w1.grad, dist_dict[1].dp_group)
-    assert_equal_in_group(layer_list[0].experts.b1.grad, dist_dict[1].dp_group)
+    assert_equal_in_group(ep_model.moe_layer.experts.wi.grad, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.moe_layer.experts.wo.grad, dist_dict[2].dp_group)
 
-    assert_equal_in_group(layer_list[1].experts.w1.grad, dist_dict[2].dp_group)
-    assert_equal_in_group(layer_list[1].experts.b1.grad, dist_dict[2].dp_group)
-    # MoE grad handler test passed
+    sync_tp_from_ep(tp_model, ep_model, assert_grad_flag=True)
 
 
 @pytest.mark.dist
 @rerun_if_address_is_in_use()
-def test_grad_handler():
-    spawn(run_test, 4)
+def test_moe_ep_tp():
+    spawn(run_test, 2)
 
 
 if __name__ == '__main__':
-    test_grad_handler()
+    test_moe_ep_tp()

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 import colossalai
 from colossalai.context.moe_context import MOE_CONTEXT
-from colossalai.nn.layer.moe import EPExperts, TPExperts
+from colossalai.nn.layer.moe import EPSparseMLP, TPSparseMLP
 from colossalai.testing import assert_equal_in_group, rerun_if_address_is_in_use, spawn
 from colossalai.utils import get_current_device
 from colossalai.utils.moe import sync_moe_model_param
@@ -20,7 +20,7 @@ def run_moe_init(expert_cls):
     exp2 = expert_cls(4, **expert_args)
     exp3 = expert_cls(8, **expert_args)
 
-    if expert_cls is EPExperts:
+    if expert_cls is EPSparseMLP:
         assert exp0.num_local_experts == 1
         assert exp1.num_local_experts == 1
         assert exp2.num_local_experts == 1
@@ -49,12 +49,12 @@ def run_moe_init(expert_cls):
     sync_moe_model_param(model)
 
     # MOE experts layout success when ep_size = 1
-    assert_equal_in_group(exp0.w1.data, parallel_info_dict[1].dp_group)
-    assert_equal_in_group(exp0.b1.data, parallel_info_dict[1].dp_group)
+    assert_equal_in_group(exp0.wi.data, parallel_info_dict[1].dp_group)
+    assert_equal_in_group(exp0.wo.data, parallel_info_dict[1].dp_group)
 
     # MOE experts layout success when ep_size = 2
-    assert_equal_in_group(exp1.w1.data, parallel_info_dict[2].dp_group)
-    assert_equal_in_group(exp1.b1.data, parallel_info_dict[2].dp_group)
+    assert_equal_in_group(exp1.wi.data, parallel_info_dict[2].dp_group)
+    assert_equal_in_group(exp1.wo.data, parallel_info_dict[2].dp_group)
 
 
 def _run_test(rank, world_size, port, expert_cls):
@@ -64,12 +64,12 @@ def _run_test(rank, world_size, port, expert_cls):
 
 
 @pytest.mark.dist
+@pytest.mark.parametrize("expert_cls", [EPSparseMLP, TPSparseMLP])
 @rerun_if_address_is_in_use()
-@pytest.mark.parametrize("expert_cls", [EPExperts, TPExperts])
 def test_moe_initialization(expert_cls):
     spawn(_run_test, 4, expert_cls=expert_cls)
 
 
 if __name__ == '__main__':
-    test_moe_initialization(EPExperts)
-    test_moe_initialization(TPExperts)
+    test_moe_initialization(EPSparseMLP)
+    test_moe_initialization(TPSparseMLP)
