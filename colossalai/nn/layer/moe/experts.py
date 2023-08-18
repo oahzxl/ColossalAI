@@ -24,7 +24,8 @@ class BaseExperts(nn.Module):
         self.comm_name = comm_name
         self.num_total_experts = num_experts
         # Get the configuration of experts' deployment and parallel information from moe context
-        self.num_local_experts, self.moe_info = MOE_CONTEXT.get_info(num_experts)
+        self.num_local_experts, self.moe_info = MOE_CONTEXT.get_info(
+            num_experts, use_tp=True if comm_name == "all_gather" else False)
 
 
 class EPExperts(BaseExperts):
@@ -118,9 +119,9 @@ class TPExperts(BaseExperts):
                  num_experts: int,
                  hidden_size: int,
                  intermediate_size: int,
-                 activation=None,
+                 activation: str = None,
                  drop_rate: float = 0):
-        super().__init__("all_gather", MOE_CONTEXT.max_ep_size)
+        super().__init__("all_gather", num_experts)
 
         assert intermediate_size % MOE_CONTEXT.max_ep_size == 0, \
             "d_ff should be divide by maximum expert parallel size"
