@@ -9,7 +9,7 @@ from colossalai.core import global_context as gpc
 from colossalai.engine.gradient_handler._base_gradient_handler import BaseGradientHandler
 from colossalai.engine.gradient_handler.utils import bucket_allreduce
 from colossalai.nn import CheckpointModule
-from colossalai.nn.layer import MoeModule
+from colossalai.nn.layer import SparseMLP
 from colossalai.registry import GRADIENT_HANDLER
 from colossalai.tensor.moe_tensor.api import get_ep_group, get_ep_rank, get_ep_size, is_moe_tensor
 from colossalai.utils.moe import get_moe_epsize_param_dict
@@ -23,8 +23,7 @@ class MoeModel(nn.Module):
 
             def __init__(self):
                 super().__init__(checkpoint)
-                self.moe = MoeModule(num_experts=8,
-                                     use_residual=False,
+                self.moe = SparseMLP(num_experts=8,
                                      expert_parallel=expert_parallel,
                                      hidden_size=16,
                                      intermediate_size=32)
@@ -87,7 +86,7 @@ class MoeGradientHandler(BaseGradientHandler):
                                      group=MOE_CONTEXT.parallel_info_dict[ep_size].dp_group)
 
 
-def sync_tp_from_ep(tp_model: MoeModule, ep_model: MoeModule, assert_grad_flag: bool = False) -> None:
+def sync_tp_from_ep(tp_model: SparseMLP, ep_model: SparseMLP, assert_grad_flag: bool = False) -> None:
     """Sync the parameters of tp model from ep model
 
     Args:

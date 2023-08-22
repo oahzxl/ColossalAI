@@ -4,7 +4,7 @@ import torch.distributed as dist
 
 import colossalai
 from colossalai.context.moe_context import MOE_CONTEXT
-from colossalai.nn.layer.moe import MoeModule
+from colossalai.nn.layer.moe import SparseMLP
 from colossalai.testing import assert_equal_in_group, rerun_if_address_is_in_use, spawn
 from colossalai.utils import get_current_device
 from colossalai.utils.moe import sync_moe_model_param
@@ -18,16 +18,16 @@ def run_test(rank, world_size, port):
     colossalai.launch(config=dict(), rank=rank, world_size=world_size, host='localhost', port=port, backend='nccl')
     MOE_CONTEXT.setup(42)    # MOE initialization
 
-    ep_model = MoeModule(num_experts=4, expert_parallel="EP", hidden_size=DIM, intermediate_size=DIM)
-    tp_model = MoeModule(num_experts=4, expert_parallel="TP", hidden_size=DIM, intermediate_size=DIM)
+    ep_model = SparseMLP(num_experts=4, expert_parallel="EP", hidden_size=DIM, intermediate_size=DIM)
+    tp_model = SparseMLP(num_experts=4, expert_parallel="TP", hidden_size=DIM, intermediate_size=DIM)
     ep_model = ep_model.to(get_current_device())
     tp_model = tp_model.to(get_current_device())
 
     # sync ep param
     sync_moe_model_param(ep_model)
     dist_dict = MOE_CONTEXT.parallel_info_dict
-    assert_equal_in_group(ep_model.moe_layer.experts.wi.data, dist_dict[2].dp_group)
-    assert_equal_in_group(ep_model.moe_layer.experts.wo.data, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.experts.wi.data, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.experts.wo.data, dist_dict[2].dp_group)
     grad_handler = MoeGradientHandler(ep_model)
     # sync tp param
     sync_tp_from_ep(tp_model, ep_model)
@@ -47,8 +47,8 @@ def run_test(rank, world_size, port):
     out_ep.mean().backward()
     grad_handler.handle_gradient()
 
-    assert_equal_in_group(ep_model.moe_layer.experts.wi.grad, dist_dict[2].dp_group)
-    assert_equal_in_group(ep_model.moe_layer.experts.wo.grad, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.experts.wi.grad, dist_dict[2].dp_group)
+    assert_equal_in_group(ep_model.experts.wo.grad, dist_dict[2].dp_group)
 
     sync_tp_from_ep(tp_model, ep_model, assert_grad_flag=True)
 

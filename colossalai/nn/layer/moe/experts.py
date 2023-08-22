@@ -10,7 +10,10 @@ from colossalai.context.moe_context import MOE_CONTEXT
 from colossalai.tensor.moe_tensor.api import get_dp_group, get_ep_group, get_ep_size, set_moe_tensor_info
 
 
-class SparseMLP(nn.Module):
+class BaseMLPExperts(nn.Module):
+    """
+    SparseMLP is a multi-layer perceptron with sparse expert parallel layers.
+    """
 
     def __init__(
         self,
@@ -72,8 +75,9 @@ class SparseMLP(nn.Module):
         return x    # outputs [g, e, c, h]
 
 
-class EPSparseMLP(SparseMLP):
-    """Use torch.bmm to speed up for multiple experts.
+class EPMLPExperts(BaseMLPExperts):
+    """
+    Use expert parallelism to split each expert evenly, which can deploy experts in
     """
 
     def __init__(self,
@@ -108,7 +112,7 @@ class EPSparseMLP(SparseMLP):
         dist.barrier()
 
 
-class TPSparseMLP(SparseMLP):
+class TPMLPExperts(BaseMLPExperts):
     """Use tensor parallelism to split each expert evenly, which can deploy experts in
     case that the number of experts can't be divide by maximum expert parallel size or
     maximum expert parallel size can't be divide by the number of experts.
@@ -123,10 +127,10 @@ class TPSparseMLP(SparseMLP):
         super().__init__(num_experts, hidden_size, intermediate_size, "TP", activation, drop_rate)
 
 
-def get_expert_class(name: str) -> SparseMLP:
+def get_expert_class(name: str) -> BaseMLPExperts:
     if name == "TP":
-        return TPSparseMLP
+        return TPMLPExperts
     elif name == "EP":
-        return EPSparseMLP
+        return EPMLPExperts
     else:
         raise ValueError(f"Unknown expert class name: {name}")

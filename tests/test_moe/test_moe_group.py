@@ -4,7 +4,7 @@ import torch.nn as nn
 
 import colossalai
 from colossalai.context.moe_context import MOE_CONTEXT
-from colossalai.nn.layer.moe import EPSparseMLP, TPSparseMLP
+from colossalai.nn.layer.moe import EPMLPExperts, TPMLPExperts
 from colossalai.testing import assert_equal_in_group, rerun_if_address_is_in_use, spawn
 from colossalai.utils import get_current_device
 from colossalai.utils.moe import sync_moe_model_param
@@ -20,7 +20,7 @@ def run_moe_init(expert_cls):
     exp2 = expert_cls(4, **expert_args)
     exp3 = expert_cls(8, **expert_args)
 
-    if expert_cls is EPSparseMLP:
+    if expert_cls is EPMLPExperts:
         assert exp0.num_local_experts == 1
         assert exp1.num_local_experts == 1
         assert exp2.num_local_experts == 1
@@ -64,12 +64,12 @@ def _run_test(rank, world_size, port, expert_cls):
 
 
 @pytest.mark.dist
-@pytest.mark.parametrize("expert_cls", [EPSparseMLP, TPSparseMLP])
+@pytest.mark.parametrize("expert_cls", [EPMLPExperts, TPMLPExperts])
 @rerun_if_address_is_in_use()
 def test_moe_initialization(expert_cls):
     spawn(_run_test, 4, expert_cls=expert_cls)
 
 
 if __name__ == '__main__':
-    test_moe_initialization(EPSparseMLP)
-    test_moe_initialization(TPSparseMLP)
+    test_moe_initialization(EPMLPExperts)
+    test_moe_initialization(TPMLPExperts)
