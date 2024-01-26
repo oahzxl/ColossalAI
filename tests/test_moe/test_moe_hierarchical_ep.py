@@ -1,4 +1,4 @@
-import warnings
+import os
 
 import pytest
 import torch
@@ -102,7 +102,9 @@ def sync_local_from_ep(local_model: SparseMLP, ep_model: SparseMLP, assert_grad_
         if "experts" not in local_name:
             if assert_grad_flag:
                 assert torch.allclose(local_param, ep_param)
-                assert torch.allclose(local_param.grad, ep_param.grad)
+                assert torch.allclose(
+                    local_param.grad, ep_param.grad
+                ), f"name: {local_name}, local: {local_param.grad}, ep: {ep_param.grad}"
             else:
                 local_param.data.copy_(ep_param.data)
             continue
@@ -133,16 +135,12 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
     local_model = SparseMLP(num_experts=num_experts, hidden_size=dim, intermediate_size=dim * 2)
     MOE_MANAGER.__init__()
     MOE_MANAGER.setup(parallel="EP")
+    # fake to be 2 nodes
+    os.environ["LOCAL_WORLD_SIZE"] = str(world_size // 2)
     ep_model = SparseMLP(
-        num_experts=num_experts,
-        hidden_size=dim,
-        intermediate_size=dim * 2,
+        num_experts=num_experts, hidden_size=dim, intermediate_size=dim * 2, enable_hierarchical_comm=True
     )
-    MOE_MANAGER.__init__()
-    MOE_MANAGER.setup(parallel="TP")
-    tp_model = SparseMLP(num_experts=num_experts, hidden_size=dim, intermediate_size=dim * 2)
     ep_model = ep_model.to(get_current_device())
-    tp_model = tp_model.to(get_current_device())
     local_model = local_model.to(get_current_device())
 
     # sync ep param
@@ -153,9 +151,6 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
     ep_grad_handler = MoeGradientHandler(ep_model)
     # sync local param
     sync_local_from_ep(local_model, ep_model)
-    # sync tp param
-    sync_tp_from_ep(tp_model, ep_model)
-    tp_grad_handler = MoeGradientHandler(tp_model)
 
     rank = dist.get_rank()
     input_data = torch.randn(batch_size, dim, device=get_current_device())
@@ -166,48 +161,22 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
 
     out_local = local_model(input_data)
     MOE_MANAGER.reset_loss()
-    out_tp = tp_model(shard_data)
-    MOE_MANAGER.reset_loss()
+    dist.barrier()
     out_ep = ep_model(shard_data)
     MOE_MANAGER.reset_loss()
 
+    out_local_slice = out_local[index : index + micro_batch_size]
     assert torch.allclose(
-        out_tp, out_ep, atol=1e-6
-    ), f"Rank {rank} failed, max diff: {torch.max(torch.abs(out_tp - out_ep))}"
-    try:
-        out_local_slice = out_local[index : index + micro_batch_size]
-        assert torch.allclose(
-            out_ep, out_local_slice, atol=1e-6
-        ), f"Rank {rank} failed, max diff: {torch.max(torch.abs(out_ep - out_local_slice))}"
-    except AssertionError:
-        """
-        e.g., in local model, tokens = 4, capacity = 2, experts = 2, topk = 1
-            router yields [01] --> [0], [23] --> [1], this is valid as capacity is 2
-            However, in ep mode, there are 2 separate routers dealing with sharded data.
-            Assume router 0 handles token [01] and router 1 handles token [23].
-            Note that for each router the capacity is only 1 !!!
-            Thus, router 0 may yields [0] --> [0] or [1] --> [0], but not both.
-            The same thing happens on router 1. And finally some tokens are dropped due to the sharded nature.
-        """
-        warnings.warn(
-            "EP & TP may result in different behavior from local model. " "Please check the comments for details."
-        )
+        out_ep, out_local_slice, atol=1e-6
+    ), f"Rank {rank} failed, max diff: {torch.max(torch.abs(out_ep - out_local_slice))}"
 
     out_local.mean().backward()
-    out_tp.mean().backward()
-    tp_grad_handler.handle_gradient()
     out_ep.mean().backward()
     ep_grad_handler.handle_gradient()
 
     assert_equal_in_group(ep_model.experts.wi.grad, dist_dict[world_size].dp_group)
     assert_equal_in_group(ep_model.experts.wo.grad, dist_dict[world_size].dp_group)
-    sync_tp_from_ep(tp_model, ep_model, assert_grad_flag=True)
-    try:
-        sync_local_from_ep(local_model, ep_model, assert_grad_flag=True)
-    except AssertionError:
-        warnings.warn(
-            "EP & TP may result in different behavior from local model. " "Please check the comments for details."
-        )
+    sync_local_from_ep(local_model, ep_model, assert_grad_flag=True)
 
 
 @pytest.mark.dist
@@ -215,9 +184,9 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
 @pytest.mark.parametrize("batch_size", [16])
 @pytest.mark.parametrize("dim", [64])
 @rerun_if_address_is_in_use()
-def test_moe_ep_tp(num_experts: int, batch_size: int, dim: int):
-    spawn(run_test, 2, num_experts=num_experts, batch_size=batch_size, dim=dim)
+def test_moe_hierarchical_ep(num_experts: int, batch_size: int, dim: int):
+    spawn(run_test, 4, num_experts=num_experts, batch_size=batch_size, dim=dim)
 
 
 if __name__ == "__main__":
-    test_moe_ep_tp(num_experts=8, batch_size=32, dim=32)
+    test_moe_hierarchical_ep(num_experts=8, batch_size=8, dim=32)

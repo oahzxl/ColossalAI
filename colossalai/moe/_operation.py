@@ -2,6 +2,7 @@ from typing import Any, Optional, Tuple
 
 import torch
 import torch.distributed as dist
+from einops import rearrange
 from torch import Tensor
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.distributed import ProcessGroup
@@ -145,61 +146,69 @@ class AllToAll(torch.autograd.Function):
 
 
 class HierarchicalAllToAll(torch.autograd.Function):
-
     @staticmethod
     def forward(
         ctx: Any,
         inputs: Tensor,
-        groups: Tuple[ProcessGroup, ProcessGroup],
-        src_rank: int
+        ep_info: Tuple[int, ProcessGroup, ProcessGroup],
     ) -> Tensor:
         """
         Returns:
             outputs: Tensor
         """
         # TODO: we can reduce comm volume by removing empty capacity
+        src_rank, intra_ep_group, inter_ep_group = ep_info
         if ctx is not None:
-            ctx.comm_grps = groups
-            ctx.src_rank = src_rank
-        intra_node_group, inter_node_group = groups
+            ctx.ep_info = ep_info
 
-        local_world_size = dist.get_world_size(intra_node_group)
-        num_group = dist.get_world_size(inter_node_group) if inter_node_group is not None else 1
-        world_size = local_world_size * num_group
+        local_gpu_num = dist.get_world_size(intra_ep_group)
         outputs = torch.empty_like(inputs)
 
         if dist.get_rank() == src_rank:
             # intra-node gather
-            intra_output = [torch.empty_like(inputs) for _ in range(local_world_size)]
-            dist.gather(inputs, intra_output, dst=src_rank, group=intra_node_group)
+            # inputs: (expert_num, cap, h)
+            intra_output = [torch.empty_like(inputs) for _ in range(local_gpu_num)]
+            dist.gather(inputs, intra_output, dst=src_rank, group=intra_ep_group)
 
-            intra_output = [v.chunk(world_size, dim=0) for v in intra_output]
-            intra_output = torch.cat(sum(zip(*intra_output), ()))
+            # current: [local_gpu_num expert_num cap h]
+            #        = [(ep_size dp_size) (inter_ep_size local_expert_num) cap h]
+            # target:  [inter_ep_size (ep_size dp_size local_expert_num) cap h]
+            intra_output = rearrange(
+                intra_output,
+                "local_gpu_num (inter_ep_size local_expert_num) cap h -> inter_ep_size (local_gpu_num local_expert_num) cap h",
+                inter_ep_size=dist.get_world_size(inter_ep_group),
+            )
 
             # inter-node all-to-all
-            if inter_node_group is not None:
+            if inter_ep_group is not None:
                 inter_output = torch.empty_like(intra_output)
-                dist.all_to_all_single(inter_output, intra_output, group=inter_node_group)
+                dist.all_to_all_single(inter_output, intra_output, group=inter_ep_group)
 
                 # layout transform
-                inter_output = inter_output.chunk(num_group, dim=0)
-                inter_output = [v.chunk(local_world_size, dim=0) for v in inter_output]
-                intra_output = torch.cat(sum(zip(*inter_output), ()))
+                # current: [inter_ep_size (ep_size dp_size local_expert_num) cap h]
+                # target:  [(ep_size dp_size) (inter_ep_size local_expert_num) cap h]
+                #       =  [local_gpu_num expert_num cap h]
+                inter_output = rearrange(
+                    inter_output,
+                    "inter_ep_size (local_gpu_num local_expert_num) cap h -> local_gpu_num (inter_ep_size local_expert_num) cap h",
+                    local_gpu_num=local_gpu_num,
+                )
 
             # intra-node scatter
-            intra_output = list(intra_output.chunk(local_world_size, dim=0))
-            dist.scatter(outputs, intra_output, src=src_rank, group=intra_node_group)
+            intra_output = list(intra_output.chunk(local_gpu_num, dim=0))
+            intra_output = [i.squeeze(0) for i in intra_output]
+            dist.scatter(outputs, intra_output, src=src_rank, group=intra_ep_group)
 
         else:
-            dist.gather(inputs, dst=src_rank, group=intra_node_group)
-            dist.scatter(outputs, src=src_rank, group=intra_node_group)
+            dist.gather(inputs, dst=src_rank, group=intra_ep_group)
+            dist.scatter(outputs, src=src_rank, group=intra_ep_group)
 
         return outputs
 
     @staticmethod
     def backward(ctx: Any, *grad_outputs) -> Tuple[Tensor, None, None]:
         return (
-            HierarchicalAllToAll.forward(None, grad_outputs[0], ctx.comm_grps, ctx.src_rank),
+            HierarchicalAllToAll.forward(None, grad_outputs[0], ctx.ep_info),
             None,
             None,
         )
@@ -276,8 +285,9 @@ class MoeCombine(torch.autograd.Function):
         if tokens_grad.dtype != torch.float32:
             tokens_grad = tokens_grad.to(torch.float32)
 
-        d_expert, d_logits = MOE_KERNEL.combine_backward(ctx.s, ctx.e, ctx.c, ctx.h, tokens_grad, expert_tokens, logits,
-                                                         mask, dest_idx)
+        d_expert, d_logits = MOE_KERNEL.combine_backward(
+            ctx.s, ctx.e, ctx.c, ctx.h, tokens_grad, expert_tokens, logits, mask, dest_idx
+        )
         if d_expert.dtype != ctx.dtype:
             d_expert = d_expert.to(ctx.dtype)
 

@@ -180,13 +180,8 @@ def set_moe_args(config: Any, args: dict):
 
 
 def create_ep_hierarchical_group(
-    ep_group_ranks: List[int],
     nproc_per_node: Optional[int] = None,
 ) -> Tuple[int, dist.ProcessGroup, Optional[dist.ProcessGroup]]:
-    """
-    e.g., If ep_group = [1, 2, 5, 6], and nproc_per_node = 4
-        Then, ep_intra_group = [1, 2] & [5, 6], ep_inter_group = [1, 5] & None
-    """
     assert dist.is_initialized(), "Please initialize torch.distributed first."
     rank = dist.get_rank()
     if nproc_per_node is None:
@@ -197,21 +192,21 @@ def create_ep_hierarchical_group(
         assert dist.get_world_size() % nproc_per_node == 0, "nproc_per_node should be a divisor of world_size."
     num_node = dist.get_world_size() // nproc_per_node
 
-    intra_src_rank = None
-    ep_intra_node_group = None
-    for i in range(num_node):
-        ep_intra_ranks = [i * nproc_per_node + j for j in range(nproc_per_node) if j in ep_group_ranks]
-        group = dist.new_group(ep_intra_ranks)
-        if rank in ep_intra_ranks:
-            assert ep_intra_node_group is None
-            ep_intra_node_group = group
-            intra_src_rank = ep_intra_ranks[0]
+    # master node will gather and scatter all data in a node, and all2all with other master nodes
+    master_node_ranks = [i * nproc_per_node for i in range(num_node)]
+    master_node_group = dist.new_group(master_node_ranks)
 
-    ep_inter_node_group = None
-    ep_inter_ranks = [ep_group_ranks[0] + i * nproc_per_node for i in range(num_node)]
-    if len(ep_inter_ranks) > 1:
-        group = dist.new_group(ep_inter_ranks)
-        if rank in ep_inter_ranks:
-            ep_inter_node_group = group
+    # the master node smaller than current rank is the intra_src_rank
+    intra_src_rank = [i > rank for i in master_node_ranks]
+    if True not in intra_src_rank:
+        intra_src_rank = master_node_ranks[-1]
+    else:
+        intra_src_rank = master_node_ranks[intra_src_rank.index(True) - 1]
 
-    return intra_src_rank, ep_intra_node_group, ep_inter_node_group
+    # ep intra ranks are the ranks in the same node
+    intra_node_ranks = [intra_src_rank + j for j in range(nproc_per_node)]
+    intra_node_group = dist.new_group(intra_node_ranks)
+    print(
+        f"rank {rank} intra_src_rank {intra_src_rank} intra_node_ranks {intra_node_ranks} master_node_ranks {master_node_ranks}"
+    )
+    return intra_src_rank, intra_node_group, master_node_group
