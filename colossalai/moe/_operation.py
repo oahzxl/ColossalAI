@@ -150,14 +150,14 @@ class HierarchicalAllToAll(torch.autograd.Function):
     def forward(
         ctx: Any,
         inputs: Tensor,
-        ep_info: Tuple[int, ProcessGroup, ProcessGroup],
+        ep_info: Tuple[int, ProcessGroup, ProcessGroup, int, int],
     ) -> Tensor:
         """
         Returns:
             outputs: Tensor
         """
         # TODO: we can reduce comm volume by removing empty capacity
-        src_rank, intra_ep_group, inter_ep_group = ep_info
+        src_rank, intra_ep_group, inter_ep_group, local_ep_size, experts_per_gpu = ep_info
         if ctx is not None:
             ctx.ep_info = ep_info
 
@@ -166,38 +166,45 @@ class HierarchicalAllToAll(torch.autograd.Function):
 
         if dist.get_rank() == src_rank:
             # intra-node gather
+            inter_ep_size = dist.get_world_size(inter_ep_group)
             # inputs: (expert_num, cap, h)
-            intra_output = [torch.empty_like(inputs) for _ in range(local_gpu_num)]
-            dist.gather(inputs, intra_output, dst=src_rank, group=intra_ep_group)
-
-            # current: [local_gpu_num expert_num cap h]
-            #        = [(ep_size dp_size) (inter_ep_size local_expert_num) cap h]
-            # target:  [inter_ep_size (ep_size dp_size local_expert_num) cap h]
-            intra_output = rearrange(
-                intra_output,
-                "local_gpu_num (inter_ep_size local_expert_num) cap h -> inter_ep_size (local_gpu_num local_expert_num) cap h",
-                inter_ep_size=dist.get_world_size(inter_ep_group),
-            )
+            intra_gather = [torch.empty_like(inputs) for _ in range(local_gpu_num)]
+            dist.gather(inputs, intra_gather, dst=src_rank, group=intra_ep_group)
 
             # inter-node all-to-all
-            if inter_ep_group is not None:
-                inter_output = torch.empty_like(intra_output)
-                dist.all_to_all_single(inter_output, intra_output, group=inter_ep_group)
+            if inter_ep_size == 1:
+                inter_all2all = intra_gather
+            else:
+                # layout transform for all2all
+                # current: [local_gpu_num expert_num cap h]
+                #        = [local_gpu_num (inter_ep_size local_expert_num) cap h]
+                # target:  [inter_ep_size (local_gpu_num local_expert_num) cap h]
+                intra_gather = rearrange(
+                    intra_gather,
+                    "local_gpu_num (inter_ep_size local_expert_num) cap h -> inter_ep_size (local_gpu_num local_expert_num) cap h",
+                    inter_ep_size=inter_ep_size,
+                )
 
-                # layout transform
-                # current: [inter_ep_size (ep_size dp_size local_expert_num) cap h]
-                # target:  [(ep_size dp_size) (inter_ep_size local_expert_num) cap h]
+                inter_all2all = torch.empty_like(intra_gather)
+                dist.all_to_all_single(inter_all2all, intra_gather, group=inter_ep_group)
+
+                # layout transform after all2all
+                # current: [inter_ep_size (local_gpu_num local_expert_num) cap h]
+                #       =  [inter_ep_size (local_gpu_num (local_ep_group_size expert_per_gpu)) cap h]
+                # target:  [(local_gpu_num) (inter_ep_size local_expert_num) cap h]
                 #       =  [local_gpu_num expert_num cap h]
-                inter_output = rearrange(
-                    inter_output,
-                    "inter_ep_size (local_gpu_num local_expert_num) cap h -> local_gpu_num (inter_ep_size local_expert_num) cap h",
-                    local_gpu_num=local_gpu_num,
+                inter_all2all = rearrange(
+                    inter_all2all,
+                    "inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h -> (local_ep_size2 dp_size) (inter_ep_size local_ep_size1 expert_per_gpu) cap h",
+                    expert_per_gpu=experts_per_gpu,
+                    local_ep_size1=local_ep_size,
+                    local_ep_size2=local_ep_size,
                 )
 
             # intra-node scatter
-            intra_output = list(intra_output.chunk(local_gpu_num, dim=0))
-            intra_output = [i.squeeze(0) for i in intra_output]
-            dist.scatter(outputs, intra_output, src=src_rank, group=intra_ep_group)
+            intra_scatter = list(inter_all2all.chunk(local_gpu_num, dim=0))
+            intra_scatter = [i.squeeze(0).contiguous() for i in intra_scatter]
+            dist.scatter(outputs, intra_scatter, src=src_rank, group=intra_ep_group)
 
         else:
             dist.gather(inputs, dst=src_rank, group=intra_ep_group)

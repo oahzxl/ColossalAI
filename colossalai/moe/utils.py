@@ -180,6 +180,8 @@ def set_moe_args(config: Any, args: dict):
 
 
 def create_ep_hierarchical_group(
+    ep_group_ranks: List[int],
+    experts_per_gpu: int,
     nproc_per_node: Optional[int] = None,
 ) -> Tuple[int, dist.ProcessGroup, Optional[dist.ProcessGroup]]:
     assert dist.is_initialized(), "Please initialize torch.distributed first."
@@ -200,13 +202,32 @@ def create_ep_hierarchical_group(
     intra_src_rank = [i > rank for i in master_node_ranks]
     if True not in intra_src_rank:
         intra_src_rank = master_node_ranks[-1]
+        if len(master_node_ranks) == 1:
+            local_ep_size = nproc_per_node // len(ep_group_ranks)
+        else:
+            master_node_rank_gap = master_node_ranks[-1] - master_node_ranks[-2]
+            local_ep_size = sum(
+                [master_node_ranks[-1] <= i < (master_node_ranks[-1] + master_node_rank_gap) for i in ep_group_ranks]
+            )
     else:
-        intra_src_rank = master_node_ranks[intra_src_rank.index(True) - 1]
+        intra_src_rank_idx = intra_src_rank.index(True)
+        intra_src_rank = master_node_ranks[intra_src_rank_idx - 1]
+        local_ep_size = sum(
+            [
+                master_node_ranks[intra_src_rank_idx - 1] <= i < master_node_ranks[intra_src_rank_idx]
+                for i in ep_group_ranks
+            ]
+        )
 
     # ep intra ranks are the ranks in the same node
-    intra_node_ranks = [intra_src_rank + j for j in range(nproc_per_node)]
-    intra_node_group = dist.new_group(intra_node_ranks)
-    print(
-        f"rank {rank} intra_src_rank {intra_src_rank} intra_node_ranks {intra_node_ranks} master_node_ranks {master_node_ranks}"
-    )
-    return intra_src_rank, intra_node_group, master_node_group
+    for i in range(0, dist.get_world_size(), nproc_per_node):
+        cur_intra_node_ranks = [i + j for j in range(nproc_per_node)]
+        # need to create group for each intra_src_rank
+        cur_intra_node_group = dist.new_group(cur_intra_node_ranks)
+        if i == intra_src_rank:
+            intra_node_group = cur_intra_node_group
+
+    # print(
+    #     f"rank {rank} intra_src_rank {intra_src_rank} intra_node_ranks {intra_node_ranks} master_node_ranks {master_node_ranks} local_ep_size {local_ep_size} experts_per_gpu {experts_per_gpu}"
+    # )
+    return intra_src_rank, intra_node_group, master_node_group, local_ep_size, experts_per_gpu
