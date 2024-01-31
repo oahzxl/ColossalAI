@@ -184,21 +184,27 @@ class HierarchicalAllToAll(torch.autograd.Function):
         if enable_dp_balance and send:
             inputs[:, -1, 0] = used_capacity
 
+        # master node
         if dist.get_rank() == src_rank:
             # intra-node gather
             inter_ep_size = dist.get_world_size(inter_ep_group)
             intra_gather = [torch.empty_like(inputs) for _ in range(local_gpu_num)]
-
             dist.gather(inputs, intra_gather, dst=src_rank, group=intra_ep_group)
 
             # inter-node all-to-all
             if inter_ep_size == 1:
                 inter_all2all = intra_gather
             else:
-                if not enable_dp_balance or (enable_dp_balance and send):
+                # layout transform before all2all
+                if enable_dp_balance and not send:
+                    # current: [(local_ep_size dp_size) expert_per_gpu squeezed_dim h]
+                    # target:  [inter_ep_size (local_gpu_num local_expert_num) cap h]
+                    intra_gather = dp_balance_recv(
+                        dp_size, inter_ep_size, local_ep_size, experts_per_gpu, capacity, capacity_count, intra_gather
+                    )
+                else:
                     # inputs: (expert_num, cap, h)
                     # intra_gather: (local_gpu_num, expert_num, cap, h)
-                    # layout transform for all2all
                     # current: [local_gpu_num expert_num cap h]
                     #        = [local_gpu_num (inter_ep_size local_expert_num) cap h]
                     # target:  [inter_ep_size (local_gpu_num local_expert_num) cap h]
@@ -207,46 +213,20 @@ class HierarchicalAllToAll(torch.autograd.Function):
                         "local_gpu_num (inter_ep_size local_expert_num) cap h -> inter_ep_size (local_gpu_num local_expert_num) cap h",
                         inter_ep_size=inter_ep_size,
                     ).contiguous()
-                else:
-                    intra_gather = rearrange(
-                        intra_gather,
-                        "(local_ep_size dp_size) expert_per_gpu other h -> (local_ep_size expert_per_gpu) (dp_size other) h",
-                        dp_size=dp_size,
-                    )
-                    # intra_gather: (local_ep_size dp_size) expert_per_gpu other h
-                    # target: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1) cap h
-                    new_out = torch.zeros(
-                        (
-                            local_ep_size * experts_per_gpu,
-                            dp_size * inter_ep_size * local_ep_size,
-                            capacity,
-                            intra_gather.shape[-1],
-                        ),
-                        device=inputs.device,
-                        dtype=inputs.dtype,
-                    )
-                    # capacity_count: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1)
-                    for l in range(new_out.shape[0]):
-                        cap_idx = 0
-                        seq_pointer = 0
-                        while cap_idx < capacity_count.shape[1]:
-                            seq_len = int(capacity_count[l, cap_idx])
-                            new_out[l, cap_idx, :seq_len] = intra_gather[l, seq_pointer : seq_pointer + seq_len]
-                            seq_pointer += seq_len
-                            cap_idx += 1
-                    intra_gather = rearrange(
-                        new_out,
-                        "(local_ep_size1 expert_per_gpu) (dp_size inter_ep_size local_ep_size2) cap h -> inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h",
-                        dp_size=dp_size,
-                        local_ep_size1=local_ep_size,
-                        local_ep_size2=local_ep_size,
-                    ).contiguous()
 
+                # all2all
                 inter_all2all = torch.empty_like(intra_gather)
                 dist.all_to_all_single(inter_all2all, intra_gather, group=inter_ep_group)
 
-                if (not enable_dp_balance) or (enable_dp_balance and not send):
-                    # layout transform after all2all
+                # layout transform after all2all
+                if enable_dp_balance and send:
+                    # current: [inter_ep_size (local_gpu_num local_expert_num) cap h]
+                    #       =  [inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h]
+                    # target:  [(local_ep_size dp_size) expert_per_gpu squeezed_dim h]
+                    inter_all2all, capacity_count, max_seq_len = dp_balance_send(
+                        dp_size, local_ep_size, experts_per_gpu, capacity_count, inter_all2all
+                    )
+                else:
                     # current: [inter_ep_size (local_gpu_num local_expert_num) cap h]
                     #       =  [inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h]
                     # target:  [(local_ep_size2 dp_size) (inter_ep_size local_ep_size1 expert_per_gpu) cap h]
@@ -258,113 +238,53 @@ class HierarchicalAllToAll(torch.autograd.Function):
                         local_ep_size1=local_ep_size,
                         local_ep_size2=local_ep_size,
                     )
-                else:
-                    # layout transform after all2all
-                    # current: [inter_ep_size (local_gpu_num local_expert_num) cap h]
-                    #       =  [inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h]
-                    # target:  [(local_ep_size2 dp_size) (inter_ep_size local_ep_size1 expert_per_gpu) cap h]
-                    #       =  [local_gpu_num expert_num cap h]
-                    inter_all2all = rearrange(
-                        inter_all2all,
-                        "inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h -> (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1) cap h",
-                        expert_per_gpu=experts_per_gpu,
-                        local_ep_size1=local_ep_size,
-                        local_ep_size2=local_ep_size,
-                    )
-                    # capacity_count: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1)
-                    capacity_count = inter_all2all[:, :, -1, 0]
-                    # capacity_sum: local_ep_size2 expert_per_gpu
-                    capacity_sum = capacity_count.sum(dim=1)
-                    capacity_mean = capacity_sum / dp_size
-                    new_tensor = []
-                    for l in range(local_ep_size * experts_per_gpu):
-                        ep_tensor_list = []
-                        ep_cap_pos = 0
-                        ep_cap_count = 0
-                        for _ in range(dp_size):
-                            dp_tensor_list = []
-
-                            while True:
-                                # end of capacity
-                                if ep_cap_pos == capacity_count.shape[1]:
-                                    break
-                                if ep_cap_count >= 0.95 * capacity_mean[l]:
-                                    ep_cap_count = 0
-                                    break
-                                # add tokens
-                                seq_len = int(capacity_count[l, ep_cap_pos])
-                                dp_tensor_list.append(inter_all2all[l, ep_cap_pos, :seq_len])
-                                # add current capacity
-                                ep_cap_count += seq_len
-                                ep_cap_pos += 1
-
-                            # add dp_tensor to ep_tensor
-                            ep_tensor_list.append(torch.cat(dp_tensor_list, dim=0))
-
-                        new_tensor.append(torch.cat(ep_tensor_list, dim=0))
-
-                    max_len = max([i.shape[0] for i in new_tensor])
-                    if max_len % dp_size != 0:
-                        max_len = max_len + dp_size - max_len % dp_size
-
-                    for i in range(len(new_tensor)):
-                        if new_tensor[i].shape[0] < max_len:
-                            new_tensor[i] = torch.nn.functional.pad(
-                                new_tensor[i], (0, 0, 0, max_len - new_tensor[i].shape[0])
-                            )
-                    new_tensor = torch.cat(new_tensor, dim=0)
-                    new_tensor = rearrange(
-                        new_tensor,
-                        "(local_ep_size expert_per_gpu dp_size other) h -> (local_ep_size dp_size) expert_per_gpu other h",
-                        expert_per_gpu=experts_per_gpu,
-                        local_ep_size=local_ep_size,
-                        dp_size=dp_size,
-                    )
-                    final_tensor = list(new_tensor.chunk(local_gpu_num, dim=0))
-                    final_tensor = [i.squeeze(0).contiguous() for i in final_tensor]
 
             # intra-node scatter
-            if not enable_dp_balance or (enable_dp_balance and not send):
-                intra_scatter = list(inter_all2all.chunk(local_gpu_num, dim=0))
-                intra_scatter = [i.squeeze(0).contiguous() for i in intra_scatter]
+            intra_scatter = list(inter_all2all.chunk(local_gpu_num, dim=0))
+            intra_scatter = [i.squeeze(0).contiguous() for i in intra_scatter]
+            if enable_dp_balance and send:
+                # the shape is dynamic for send
+                new_seq_len = max_seq_len // dp_size
+                dist.broadcast(
+                    torch.tensor(new_seq_len, device=inputs.device, dtype=torch.long),
+                    src=src_rank,
+                    group=intra_ep_group,
+                )
+                outputs = torch.empty(
+                    (experts_per_gpu, new_seq_len, inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
+                )
+            else:
                 outputs = torch.empty(
                     (num_experts, capacity, inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
                 )
-            else:
-                new_len = max_len // dp_size
-                dist.broadcast(
-                    torch.tensor(new_len, device=inputs.device, dtype=torch.long), src=src_rank, group=intra_ep_group
-                )
-                outputs = torch.empty(
-                    (experts_per_gpu, new_len, inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
-                )
-                intra_scatter = final_tensor
             dist.scatter(outputs, intra_scatter, src=src_rank, group=intra_ep_group)
 
+        # slave node
         else:
+            # send inputs
             dist.gather(inputs, dst=src_rank, group=intra_ep_group)
-            if not enable_dp_balance or (enable_dp_balance and not send):
-                outputs = torch.empty(
-                    (num_experts, capacity, inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
-                )
-            else:
+            # get sequence length
+            if enable_dp_balance and send:
+                # the shape is dynamic for send
                 shape = torch.tensor(0, device=inputs.device, dtype=torch.long)
                 dist.broadcast(shape, src=src_rank, group=intra_ep_group)
                 outputs = torch.empty(
                     (experts_per_gpu, int(shape), inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
                 )
+            else:
+                outputs = torch.empty(
+                    (num_experts, capacity, inputs.shape[-1]), device=inputs.device, dtype=inputs.dtype
+                )
+            # receive outputs
             dist.scatter(outputs, src=src_rank, group=intra_ep_group)
 
-        if not enable_dp_balance or (enable_dp_balance and not send):
-            if ctx is not None:
-                ctx.capacity_count = capacity_count
-            return outputs
-        else:
-            if ctx is not None:
-                ctx.capacity_count = capacity_count
-                return outputs, capacity_count
-            else:
-                return outputs
+        if ctx is not None:
+            ctx.capacity_count = capacity_count
+            # add used_capacity for reuse
+            if enable_dp_balance and send:
+                outputs = (outputs, capacity_count)
+
+        return outputs
 
     @staticmethod
     def backward(ctx: Any, *grad_outputs) -> Tuple[Tensor, None, None]:
@@ -388,6 +308,107 @@ class HierarchicalAllToAll(torch.autograd.Function):
             None,
             None,
         )
+
+
+def dp_balance_recv(dp_size, inter_ep_size, local_ep_size, experts_per_gpu, capacity, capacity_count, intra_gather):
+    intra_gather = rearrange(
+        intra_gather,
+        "(local_ep_size dp_size) expert_per_gpu other h -> (local_ep_size expert_per_gpu) (dp_size other) h",
+        dp_size=dp_size,
+    )
+    # intra_gather: (local_ep_size dp_size) expert_per_gpu other h
+    # target: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1) cap h
+    new_out = torch.zeros(
+        (
+            local_ep_size * experts_per_gpu,
+            dp_size * inter_ep_size * local_ep_size,
+            capacity,
+            intra_gather.shape[-1],
+        ),
+        device=intra_gather.device,
+        dtype=intra_gather.dtype,
+    )
+    # capacity_count: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1)
+    for l in range(new_out.shape[0]):
+        cap_idx = 0
+        seq_pointer = 0
+        while cap_idx < capacity_count.shape[1]:
+            seq_len = int(capacity_count[l, cap_idx])
+            new_out[l, cap_idx, :seq_len] = intra_gather[l, seq_pointer : seq_pointer + seq_len]
+            seq_pointer += seq_len
+            cap_idx += 1
+    intra_gather = rearrange(
+        new_out,
+        "(local_ep_size1 expert_per_gpu) (dp_size inter_ep_size local_ep_size2) cap h -> inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h",
+        dp_size=dp_size,
+        local_ep_size1=local_ep_size,
+        local_ep_size2=local_ep_size,
+    ).contiguous()
+    return intra_gather
+
+
+def dp_balance_send(dp_size, local_ep_size, experts_per_gpu, capacity_count, inter_all2all):
+    # layout transform after all2all
+    # current: [inter_ep_size (local_gpu_num local_expert_num) cap h]
+    #       =  [inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h]
+    # target:  [(local_ep_size2 dp_size) (inter_ep_size local_ep_size1 expert_per_gpu) cap h]
+    #       =  [local_gpu_num expert_num cap h]
+    inter_all2all = rearrange(
+        inter_all2all,
+        "inter_ep_size (local_ep_size1 dp_size local_ep_size2 expert_per_gpu) cap h -> (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1) cap h",
+        expert_per_gpu=experts_per_gpu,
+        local_ep_size1=local_ep_size,
+        local_ep_size2=local_ep_size,
+    )
+    # capacity_count: (local_ep_size2 expert_per_gpu) (dp_size inter_ep_size local_ep_size1)
+    capacity_count = inter_all2all[:, :, -1, 0]
+    # capacity_sum: local_ep_size2 expert_per_gpu
+    capacity_sum = capacity_count.sum(dim=1)
+    capacity_mean = capacity_sum / dp_size
+    new_tensor = []
+    for l in range(local_ep_size * experts_per_gpu):
+        ep_tensor_list = []
+        ep_cap_pos = 0
+        ep_cap_count = 0
+        for _ in range(dp_size):
+            dp_tensor_list = []
+
+            while True:
+                # end of capacity
+                if ep_cap_pos == capacity_count.shape[1]:
+                    break
+                if ep_cap_count >= 0.95 * capacity_mean[l]:
+                    ep_cap_count = 0
+                    break
+                # add tokens
+                seq_len = int(capacity_count[l, ep_cap_pos])
+                dp_tensor_list.append(inter_all2all[l, ep_cap_pos, :seq_len])
+                # add current capacity
+                ep_cap_count += seq_len
+                ep_cap_pos += 1
+
+            # add dp_tensor to ep_tensor
+            ep_tensor_list.append(torch.cat(dp_tensor_list, dim=0))
+
+        new_tensor.append(torch.cat(ep_tensor_list, dim=0))
+
+    # calculate max_len
+    max_len = max([i.shape[0] for i in new_tensor])
+    if max_len % dp_size != 0:
+        max_len = max_len + dp_size - max_len % dp_size
+
+    for i in range(len(new_tensor)):
+        if new_tensor[i].shape[0] < max_len:
+            new_tensor[i] = torch.nn.functional.pad(new_tensor[i], (0, 0, 0, max_len - new_tensor[i].shape[0]))
+    new_tensor = torch.cat(new_tensor, dim=0)
+    new_tensor = rearrange(
+        new_tensor,
+        "(local_ep_size expert_per_gpu dp_size other) h -> (local_ep_size dp_size) expert_per_gpu other h",
+        expert_per_gpu=experts_per_gpu,
+        local_ep_size=local_ep_size,
+        dp_size=dp_size,
+    )
+    return new_tensor, capacity_count, max_len
 
 
 class MoeDispatch(torch.autograd.Function):
