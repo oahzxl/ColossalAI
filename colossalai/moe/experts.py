@@ -120,12 +120,17 @@ class MLPExperts(nn.Module):
         """
         x = MoeInGradScaler.apply(x, self.ep_size)
 
-        e = x.size(1)
-        h = x.size(-1)
-
-        x = x.transpose(0, 1)
-        inshape = x.shape
-        x = x.reshape(e, -1, h)
+        reshape_flag = False
+        if len(x.shape) == 4:
+            e = x.size(1)
+            h = x.size(-1)
+            x = x.transpose(0, 1)
+            inshape = x.shape
+            x = x.reshape(e, -1, h)
+            reshape_flag = True
+        else:
+            e = x.size(0)
+            h = x.size(-1)
 
         if self.use_kernel and use_sparse:
             seq_len = x.shape[1]
@@ -155,7 +160,10 @@ class MLPExperts(nn.Module):
                 x[i] = torch.nn.functional.pad(x[i], (0, 0, 0, seq_len - x[i].shape[0]), mode="constant", value=0)
 
         x = torch.cat([x[i].unsqueeze(0) for i in range(e)], dim=0)
-        x = x.reshape(inshape)
-        x = x.transpose(0, 1).contiguous()
+
+        if reshape_flag:
+            x = x.reshape(inshape)
+            x = x.transpose(0, 1).contiguous()
+
         x = MoeOutGradScaler.apply(x, self.ep_size)
         return x

@@ -67,6 +67,7 @@ class SparseMLP(nn.Module):
         enable_kernel: bool = False,
         enable_comm_overlap: bool = False,
         enable_hierarchical_comm: bool = False,
+        enable_dp_balance: bool = False,
         return_gate_logits: bool = False,
     ):
         super().__init__()
@@ -77,6 +78,7 @@ class SparseMLP(nn.Module):
         self.return_gate_logits = return_gate_logits
         self.enable_kernel = enable_kernel
         self.enable_comm_overlap = enable_comm_overlap
+        self.enable_dp_balance = enable_dp_balance
         self.expert_parallel = MOE_MANAGER.get_parallel()
         self.router_loss = router_loss
         self.router_norm = router_norm
@@ -226,17 +228,43 @@ class SparseMLP(nn.Module):
 
         Args:
             dispatch_data (torch.Tensor): (num_experts, capacity, hidden_size)
+            used_capacity (torch.Tensor): (num_experts,)
 
         Returns:
             torch.Tensor: (num_experts, capacity, hidden_size)
         """
         if not overlap or dist.get_world_size(self.ep_group) == 1:
             if self.ep_hierarchical_info is not None:
-                expert_input = HierarchicalAllToAll.apply(dispatch_data, self.ep_hierarchical_info)
-                expert_input = expert_input.reshape(self.ep_size, -1, *expert_input.shape[1:])
+                expert_input = HierarchicalAllToAll.apply(
+                    dispatch_data,
+                    self.ep_hierarchical_info,
+                    used_capacity,
+                    self.enable_dp_balance,
+                    True,
+                    dispatch_data.shape[1],
+                    None,
+                    self.num_experts,
+                )
+                if not self.enable_dp_balance:
+                    expert_input = expert_input.reshape(self.ep_size, -1, *expert_input.shape[1:])
+                    capacity_count = None
+                else:
+                    expert_input, capacity_count = expert_input
+
                 expert_output = self.experts(expert_input)
-                expert_output = expert_output.reshape(-1, *expert_output.shape[2:])
-                expert_output = HierarchicalAllToAll.apply(expert_output, self.ep_hierarchical_info)
+
+                if not self.enable_dp_balance:
+                    expert_output = expert_output.reshape(-1, *expert_output.shape[2:])
+                expert_output = HierarchicalAllToAll.apply(
+                    expert_output,
+                    self.ep_hierarchical_info,
+                    used_capacity,
+                    self.enable_dp_balance,
+                    False,
+                    dispatch_data.shape[1],
+                    capacity_count,
+                    self.num_experts,
+                )
                 return expert_output
             else:
                 expert_input = AllToAll.apply(dispatch_data, self.ep_group, False)[0]

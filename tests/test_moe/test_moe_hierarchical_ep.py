@@ -51,7 +51,9 @@ def sync_local_from_ep(local_model: SparseMLP, ep_model: SparseMLP, assert_grad_
             local_param.data.copy_(all_param.data)
 
 
-def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size: int, dim: int):
+def run_test(
+    rank: int, world_size: int, port: int, num_experts: int, batch_size: int, dim: int, enable_dp_balance: bool
+):
     assert batch_size % world_size == 0
 
     colossalai.launch(config=dict(), rank=rank, world_size=world_size, host="localhost", port=port, backend="nccl")
@@ -71,6 +73,7 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
         intermediate_size=dim * 2,
         enable_hierarchical_comm=True,
         router_capacity_factor_train=batch_size,
+        enable_dp_balance=enable_dp_balance,
     )
     ep_model = ep_model.to(get_current_device()).train()
     local_model = local_model.to(get_current_device()).train()
@@ -78,8 +81,8 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
     # sync ep param
     sync_moe_model_param(ep_model)
     dist_dict = MOE_MANAGER.parallel_info_dict
-    assert_equal_in_group(ep_model.experts.wi.data, dist_dict[world_size].dp_group)
-    assert_equal_in_group(ep_model.experts.wo.data, dist_dict[world_size].dp_group)
+    assert_equal_in_group(ep_model.experts.wi.data, dist_dict[min(world_size, num_experts)].dp_group)
+    assert_equal_in_group(ep_model.experts.wo.data, dist_dict[min(world_size, num_experts)].dp_group)
     ep_grad_handler = MoeGradientHandler(ep_model)
     # sync local param
     sync_local_from_ep(local_model, ep_model)
@@ -106,8 +109,8 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
     out_ep.mean().backward()
     ep_grad_handler.handle_gradient()
 
-    assert_equal_in_group(ep_model.experts.wi.grad, dist_dict[world_size].dp_group)
-    assert_equal_in_group(ep_model.experts.wo.grad, dist_dict[world_size].dp_group)
+    assert_equal_in_group(ep_model.experts.wi.grad, dist_dict[min(world_size, num_experts)].dp_group)
+    assert_equal_in_group(ep_model.experts.wo.grad, dist_dict[min(world_size, num_experts)].dp_group)
     sync_local_from_ep(local_model, ep_model, assert_grad_flag=True)
 
 
@@ -115,8 +118,10 @@ def run_test(rank: int, world_size: int, port: int, num_experts: int, batch_size
 @pytest.mark.parametrize(
     "config",
     [
-        {"world_size": 4, "num_experts": 4, "batch_size": 8, "dim": 4},
-        {"world_size": 4, "num_experts": 8, "batch_size": 32, "dim": 4},
+        {"world_size": 4, "num_experts": 4, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 4, "num_experts": 8, "batch_size": 32, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": True},
     ],
 )
 @rerun_if_address_is_in_use()
@@ -127,8 +132,9 @@ def test_moe_hierarchical_ep(config: dict):
         num_experts=config["num_experts"],
         batch_size=config["batch_size"],
         dim=config["dim"],
+        enable_dp_balance=config["enable_dp_balance"],
     )
 
 
 if __name__ == "__main__":
-    test_moe_hierarchical_ep({"world_size": 4, "num_experts": 8, "batch_size": 8, "dim": 4})
+    test_moe_hierarchical_ep({"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": True})
