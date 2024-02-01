@@ -32,7 +32,9 @@ RedPajama is a clean-room, fully open-source implementation of the LLaMa dataset
 _URL_LISTS = {
     # "arxiv": "new_urls/arxiv.txt",
     # "book": "new_urls/book.txt",
-    "c4": "new_urls/c4.txt",
+    "c4_1": "new_urls/c4_1.txt",
+    "c4_2": "new_urls/c4_2.txt",
+    "c4_3": "new_urls/c4_3.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
     "test": "new_urls/test.txt",
@@ -88,8 +90,20 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         # ),
 
         RedPajama60BConfig(
-            name = 'c4',
-            subsets = ['c4'],
+            name = 'c4_1',
+            subsets = ['c4_1'],
+            version=datasets.Version("1.0.0", ""),
+            description="RedPajama1T c4 subset",
+        ),
+        RedPajama60BConfig(
+            name = 'c4_2',
+            subsets = ['c4_2'],
+            version=datasets.Version("1.0.0", ""),
+            description="RedPajama1T c4 subset",
+        ),
+        RedPajama60BConfig(
+            name = 'c4_3',
+            subsets = ['c4_3'],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
