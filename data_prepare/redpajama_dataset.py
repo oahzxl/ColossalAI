@@ -35,6 +35,8 @@ _URL_LISTS = {
     "c4_1": "new_urls/c4_1.txt",
     "c4_2": "new_urls/c4_2.txt",
     "c4_3": "new_urls/c4_3.txt",
+    "c4_4": "new_urls/c4_4.txt",
+    "c4_5": "new_urls/c4_5.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
     "test": "new_urls/test.txt",
@@ -104,6 +106,18 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         RedPajama60BConfig(
             name = 'c4_3',
             subsets = ['c4_3'],
+            version=datasets.Version("1.0.0", ""),
+            description="RedPajama1T c4 subset",
+        ),
+        RedPajama60BConfig(
+            name = 'c4_4',
+            subsets = ['c4_4'],
+            version=datasets.Version("1.0.0", ""),
+            description="RedPajama1T c4 subset",
+        ),
+        RedPajama60BConfig(
+            name = 'c4_5',
+            subsets = ['c4_5'],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
