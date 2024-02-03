@@ -257,6 +257,7 @@ def main():
         drop_last=True,
         collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
         num_workers=8,
+        prefetch_factor=1,
     )
     total_token_num = 60000000000  # 60B
 
