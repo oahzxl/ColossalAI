@@ -17,10 +17,10 @@
 
 
 import json
+import os
+import traceback
 
 import datasets
-import traceback
-import os
 
 logger = datasets.logging.get_logger(__name__)
 
@@ -33,16 +33,18 @@ _URL_LISTS = {
     # "arxiv": "new_urls/arxiv.txt",
     # "book": "new_urls/book.txt",
     "c4": "new_urls/c4.txt",
+    "c4_1-4": "new_urls/c4_1-4.txt",
     "test": "new_urls/test.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
     # "stackexchange": "new_urls/stackexchange.txt",
     # "wikipedia": "new_urls/wikipedia.txt",
 }
-_URL_BASE = 'https://data.together.xyz/redpajama-data-1T/v1.0.0'
+_URL_BASE = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
 
-_DATA_DIR = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
-# _DATA_DIR = "/data/personal/nus-zxl/VerticalMoE/data_prepare/downloads"
+# _DATA_DIR = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
+_DATA_DIR = "/data/personal/nus-zxl/VerticalMoE/data_prepare/downloads"
+
 
 class RedPajama60BConfig(datasets.BuilderConfig):
     """BuilderConfig for RedPajama sample."""
@@ -61,61 +63,59 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
 
     BUILDER_CONFIGS = [
         RedPajama60BConfig(
-            name = 'default',
-            subsets = list(_URL_LISTS.keys()),
+            name="default",
+            subsets=list(_URL_LISTS.keys()),
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T",
         ),
-
         # RedPajama60BConfig(
         #     name = 'arxiv',
         #     subsets = ['arxiv'],
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T arxiv subset",
         # ),
-
         # RedPajama60BConfig(
         #     name = 'book',
         #     subsets = ['book'],
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T book subset",
         # ),
-
         RedPajama60BConfig(
-            name = 'c4',
-            subsets = ['c4'],
+            name="c4",
+            subsets=["c4"],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
-        
         RedPajama60BConfig(
-            name = 'test',
-            subsets = ['test'],
+            name="c4_1-4",
+            subsets=["c4_1-4"],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
-
+        RedPajama60BConfig(
+            name="test",
+            subsets=["test"],
+            version=datasets.Version("1.0.0", ""),
+            description="RedPajama1T c4 subset",
+        ),
         # RedPajama60BConfig(
         #     name = 'common_crawl',
         #     subsets = ['common_crawl'],
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T common crawl subset",
         # ),
-
         # RedPajama60BConfig(
         #     name = 'github',
         #     subsets = ['github'],
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T github subset",
         # ),
-
         # RedPajama60BConfig(
         #     name = 'stackexchange',
         #     subsets = ['stackexchange'],
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T stackexchange subset",
         # ),
-
         # RedPajama60BConfig(
         #     name = 'wikipedia',
         #     subsets = ['wikipedia'],
@@ -138,9 +138,7 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         )
 
     def _split_generators(self, dl_manager):
-        url_lists = dl_manager.download_and_extract({
-            subset: _URL_LISTS[subset] for subset in self.config.subsets
-        })
+        url_lists = dl_manager.download_and_extract({subset: _URL_LISTS[subset] for subset in self.config.subsets})
 
         urls = {}
 
@@ -149,13 +147,10 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
                 urls[subset] = [line.strip() for line in f]
 
         if _DATA_DIR is not None:
-            print(f'Reading data from {_DATA_DIR}')
-            url_prefix_slashes = len(_URL_BASE.split('/'))
+            print(f"Reading data from {_DATA_DIR}")
+            url_prefix_slashes = len(_URL_BASE.split("/"))
             downloaded_files = {
-                subset: [
-                    os.path.join(_DATA_DIR, *url.split('/')[url_prefix_slashes:])
-                    for url in url_list
-                ]
+                subset: [os.path.join(_DATA_DIR, *url.split("/")[url_prefix_slashes:]) for url in url_list]
                 for subset, url_list in urls.items()
             }
         else:
@@ -164,12 +159,7 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         return [
             datasets.SplitGenerator(
                 name=datasets.Split.TRAIN,
-                gen_kwargs = {
-                    "files": {
-                        subset: downloaded_files[subset]
-                        for subset in self.config.subsets
-                    }
-                }
+                gen_kwargs={"files": {subset: downloaded_files[subset] for subset in self.config.subsets}},
             )
         ]
 
@@ -198,10 +188,9 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
                                 }
                             key += 1
                         except Exception as e:
-                            print(f'Subset: {subset}')
-                            print(f'Path: {path}')
-                            print(f'Row: {row}')
+                            print(f"Subset: {subset}")
+                            print(f"Path: {path}")
+                            print(f"Row: {row}")
                             traceback.print_exc()
 
                             raise e
-

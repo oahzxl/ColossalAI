@@ -3,7 +3,7 @@ if __name__ == "__main__":
 
     ds = load_dataset(
         "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
-        "c4_1",
+        "c4_1-4",
         trust_remote_code=True,
         split="train",
     )
