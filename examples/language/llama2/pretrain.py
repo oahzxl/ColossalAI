@@ -256,6 +256,8 @@ def main():
         shuffle=True,
         drop_last=True,
         collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
+        pin_memory=True,
+        num_workers=8,
     )
     total_token_num = 60000000000  # 60B
 
