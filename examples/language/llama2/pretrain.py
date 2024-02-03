@@ -63,11 +63,11 @@ def format_token_str(numel: int) -> str:
     M = 1000**2
     K = 1000
     if numel >= B:
-        return f"{numel / B:.2f} B"
+        return f"{numel / B:.2f}B"
     elif numel >= M:
-        return f"{numel / M:.2f} M"
+        return f"{numel / M:.2f}M"
     elif numel >= K:
-        return f"{numel / K:.2f} K"
+        return f"{numel / K:.2f}K"
     else:
         return f"{numel}"
 
