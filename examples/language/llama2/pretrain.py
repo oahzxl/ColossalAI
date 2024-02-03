@@ -1,11 +1,13 @@
 import argparse
 import os
+import random
 import resource
 import time
 from contextlib import nullcontext
 from functools import partial
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -27,6 +29,16 @@ from colossalai.lazy import LazyInitContext
 from colossalai.nn.lr_scheduler import CosineAnnealingWarmupLR
 from colossalai.nn.optimizer import HybridAdam
 from colossalai.utils import get_current_device
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def get_model_numel(model: nn.Module) -> int:
@@ -138,6 +150,7 @@ def main():
     # Initialize Distributed Training
     # ==============================
     colossalai.launch_from_torch({})
+    seed_everything(42)
     coordinator = DistCoordinator()
 
     # ==============================
