@@ -242,9 +242,9 @@ def main():
 
     if args.grad_checkpoint:
         model.gradient_checkpointing_enable()
-    if args.flash_attention:
-        assert SUPPORT_XFORMERS, "Use flash attention while xfomers is not installed"
-        replace_xformers(model)
+    # if args.flash_attention:
+    #     assert SUPPORT_XFORMERS, "Use flash attention while xfomers is not installed"
+    #     replace_xformers(model)
 
     model_numel = get_model_numel(model)
     coordinator.print_on_master(f"Model params: {format_numel_str(model_numel)}")
