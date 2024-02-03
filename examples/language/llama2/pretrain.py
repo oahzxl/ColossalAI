@@ -4,21 +4,19 @@ import resource
 from contextlib import nullcontext
 from functools import partial
 from typing import Optional, Tuple
-from torch.optim import Adam
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from attn import SUPPORT_XFORMERS, replace_xformers
-from data_utils import load_json, prepare_dataloader, save_json
+from data_utils import load_json, save_json
 from datasets import load_dataset
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
-from torch.utils.data import DataLoader
 
 import colossalai
 from colossalai.booster import Booster
@@ -51,7 +49,7 @@ def format_numel_str(numel: int) -> str:
 def tokenize_batch_for_pretrain(batch, tokenizer: Optional[AutoTokenizer] = None, max_length: int = 2048):
     texts = [sample["text"] for sample in batch]
     data = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=max_length)
-    data = {k: v.cuda() for k, v in data.items()}
+    # data = {k: v.cuda() for k, v in data.items()}
     data["labels"] = data["input_ids"].clone()
     return data
 
@@ -145,20 +143,20 @@ def main():
     # Initialize Model Configs
     # ==============================
     MODEL_CONFIGS = {
-    # follow opt-125m
-    "base": MixtralConfig(
-        hidden_size=768,
-        intermediate_size=3072,
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        num_key_value_heads=4,
-        max_position_embeddings=args.max_length,
-        num_local_experts=8,
-        use_cache=False,
-        _attn_implementation="flash_attention_2" if args.flash_attention else "eager",
-    ),
-}
-    
+        # follow opt-125m
+        "base": MixtralConfig(
+            hidden_size=768,
+            intermediate_size=3072,
+            num_hidden_layers=12,
+            num_attention_heads=12,
+            num_key_value_heads=4,
+            max_position_embeddings=args.max_length,
+            num_local_experts=8,
+            use_cache=False,
+            _attn_implementation="flash_attention_2" if args.flash_attention else "eager",
+        ),
+    }
+
     # ==============================
     # Initialize Booster
     # ==============================
@@ -221,7 +219,13 @@ def main():
         streaming=True,
     )
     train_ds = train_ds.shuffle(seed=42)
-    dataloader = DataLoader(train_ds, batch_size=args.batch_size, collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length))
+    dataloader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
+        prefetch_factor=2,
+        pin_memory=True,
+    )
     total_token_num = 60000000000  # 60B
     esitimated_step_num = total_token_num // args.batch_size // 500
 
@@ -249,7 +253,7 @@ def main():
     model_numel = get_model_numel(model)
     coordinator.print_on_master(f"Model params: {format_numel_str(model_numel)}")
 
-    optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weigth_decay)
+    optimizer = HybridAdam(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weigth_decay)
     lr_scheduler = CosineAnnealingWarmupLR(
         optimizer, total_steps=esitimated_step_num, warmup_steps=args.warmup_steps, eta_min=0.1 * args.lr
     )
@@ -299,6 +303,7 @@ def main():
                     loss = outputs["loss"]
                 else:
                     batch = next(dataloader_iter)
+                    batch = {k: v.cuda() for k, v in batch.items()}
                     with torch.no_grad():
                         cur_token = (batch["input_ids"] != 0).sum().item()
                         token_num += cur_token
@@ -310,8 +315,8 @@ def main():
                     loss = outputs[0]
                     booster.backward(loss, optimizer)
 
-                lr_scheduler.step()
                 optimizer.step()
+                lr_scheduler.step()
                 optimizer.zero_grad()
 
                 if not use_pipeline:
