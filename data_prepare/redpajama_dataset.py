@@ -33,7 +33,7 @@ _URL_LISTS = {
     # "arxiv": "new_urls/arxiv.txt",
     # "book": "new_urls/book.txt",
     "c4": "new_urls/c4.txt",
-    "c4_1-4": "new_urls/c4_1-4.txt",
+    "c4_1-3": "new_urls/c4_1-3.txt",
     "test": "new_urls/test.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
@@ -42,7 +42,6 @@ _URL_LISTS = {
 }
 _URL_BASE = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
 
-# _DATA_DIR = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
 _DATA_DIR = "/data/personal/nus-zxl/VerticalMoE/data_prepare/downloads"
 
 
@@ -87,8 +86,8 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
             description="RedPajama1T c4 subset",
         ),
         RedPajama60BConfig(
-            name="c4_1-4",
-            subsets=["c4_1-4"],
+            name="c4_1-3",
+            subsets=["c4_1-3"],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
