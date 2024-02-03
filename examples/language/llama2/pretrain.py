@@ -61,7 +61,6 @@ def format_numel_str(numel: int) -> str:
 def tokenize_batch_for_pretrain(batch, tokenizer: Optional[AutoTokenizer] = None, max_length: int = 2048):
     texts = [sample["text"] for sample in batch]
     data = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=max_length)
-    # data = {k: v.cuda() for k, v in data.items()}
     data["labels"] = data["input_ids"].clone()
     return data
 
@@ -80,6 +79,7 @@ def save(
     lr_scheduler: _LRScheduler,
     epoch: int,
     step: int,
+    token_num: int,
     batch_size: int,
     coordinator: DistCoordinator,
     save_dir: str,
@@ -94,6 +94,7 @@ def save(
         "epoch": epoch,
         "step": step,
         "sample_start_index": step * batch_size,
+        "token_num": token_num,
     }
     if coordinator.is_master():
         save_json(running_states, os.path.join(save_dir, "running_states.json"))
@@ -106,7 +107,12 @@ def load(
     booster.load_optimizer(optimizer, os.path.join(load_dir, "optimizer"))
     booster.load_lr_scheduler(lr_scheduler, os.path.join(load_dir, "lr_scheduler"))
     running_states = load_json(os.path.join(load_dir, "running_states.json"))
-    return running_states["epoch"], running_states["step"], running_states["sample_start_index"]
+    return (
+        running_states["epoch"],
+        running_states["step"],
+        running_states["sample_start_index"],
+        running_states["token_num"],
+    )
 
 
 def _criterion(outputs, inputs):
@@ -283,9 +289,11 @@ def main():
     start_epoch = 0
     start_step = 0
     sampler_start_idx = 0
+    token_num = 0
+
     if args.load is not None:
         coordinator.print_on_master("Loading checkpoint")
-        start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
+        start_epoch, start_step, sampler_start_idx, token_num = load(booster, model, optimizer, lr_scheduler, args.load)
         coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
 
     num_steps_per_epoch = len(dataloader)
@@ -295,7 +303,6 @@ def main():
     for epoch in range(start_epoch, args.num_epochs):
         dataloader.sampler.set_epoch(epoch)
         dataloader_iter = iter(dataloader)
-        token_num = 0
 
         with tqdm(
             range(start_step, num_steps_per_epoch),
@@ -344,6 +351,7 @@ def main():
                         lr_scheduler,
                         epoch,
                         step + 1,
+                        token_num,
                         args.batch_size,
                         coordinator,
                         os.path.join(args.save_dir, time_prefix),
