@@ -32,20 +32,17 @@ RedPajama is a clean-room, fully open-source implementation of the LLaMa dataset
 _URL_LISTS = {
     # "arxiv": "new_urls/arxiv.txt",
     # "book": "new_urls/book.txt",
-    "c4_1": "new_urls/c4_1.txt",
-    "c4_2": "new_urls/c4_2.txt",
-    "c4_3": "new_urls/c4_3.txt",
-    "c4_4": "new_urls/c4_4.txt",
-    "c4_5": "new_urls/c4_5.txt",
+    "c4": "new_urls/c4.txt",
+    "test": "new_urls/test.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
-    "test": "new_urls/test.txt",
     # "stackexchange": "new_urls/stackexchange.txt",
     # "wikipedia": "new_urls/wikipedia.txt",
 }
 _URL_BASE = 'https://data.together.xyz/redpajama-data-1T/v1.0.0'
 
-_DATA_DIR = "/data/personal/nus-zxl/VerticalMoE/data_prepare/downloads"
+_DATA_DIR = "https://data.together.xyz/redpajama-data-1T/v1.0.0"
+# _DATA_DIR = "/data/personal/nus-zxl/VerticalMoE/data_prepare/downloads"
 
 class RedPajama60BConfig(datasets.BuilderConfig):
     """BuilderConfig for RedPajama sample."""
@@ -76,13 +73,6 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         #     version=datasets.Version("1.0.0", ""),
         #     description="RedPajama1T arxiv subset",
         # ),
-        
-        RedPajama60BConfig(
-            name = 'test',
-            subsets = ['test'],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T arxiv subset",
-        ),
 
         # RedPajama60BConfig(
         #     name = 'book',
@@ -92,32 +82,15 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         # ),
 
         RedPajama60BConfig(
-            name = 'c4_1',
-            subsets = ['c4_1'],
+            name = 'c4',
+            subsets = ['c4'],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),
+        
         RedPajama60BConfig(
-            name = 'c4_2',
-            subsets = ['c4_2'],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T c4 subset",
-        ),
-        RedPajama60BConfig(
-            name = 'c4_3',
-            subsets = ['c4_3'],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T c4 subset",
-        ),
-        RedPajama60BConfig(
-            name = 'c4_4',
-            subsets = ['c4_4'],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T c4 subset",
-        ),
-        RedPajama60BConfig(
-            name = 'c4_5',
-            subsets = ['c4_5'],
+            name = 'test',
+            subsets = ['test'],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),

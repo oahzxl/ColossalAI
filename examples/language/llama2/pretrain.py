@@ -4,7 +4,7 @@ import resource
 from contextlib import nullcontext
 from functools import partial
 from typing import Optional, Tuple
-
+from torch.optim import Adam
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -15,9 +15,10 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from transformers import AutoTokenizer
 from transformers.models.llama.configuration_llama import LlamaConfig
-from transformers.models.llama.modeling_llama import LlamaForCausalLM
-from transformers.models.llama.tokenization_llama import LlamaTokenizer
+from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
+from torch.utils.data import DataLoader
 
 import colossalai
 from colossalai.booster import Booster
@@ -27,25 +28,6 @@ from colossalai.lazy import LazyInitContext
 from colossalai.nn.lr_scheduler import CosineAnnealingWarmupLR
 from colossalai.nn.optimizer import HybridAdam
 from colossalai.utils import get_current_device
-
-MODEL_CONFIGS = {
-    "7b": LlamaConfig(max_position_embeddings=4096),
-    "13b": LlamaConfig(
-        hidden_size=5120,
-        intermediate_size=13824,
-        num_hidden_layers=40,
-        num_attention_heads=40,
-        max_position_embeddings=4096,
-    ),
-    "70b": LlamaConfig(
-        hidden_size=8192,
-        intermediate_size=28672,
-        num_hidden_layers=80,
-        num_attention_heads=64,
-        max_position_embeddings=4096,
-        num_key_value_heads=8,
-    ),
-}
 
 
 def get_model_numel(model: nn.Module) -> int:
@@ -66,7 +48,7 @@ def format_numel_str(numel: int) -> str:
         return f"{numel}"
 
 
-def tokenize_batch_for_pretrain(batch, tokenizer: Optional[LlamaTokenizer] = None, max_length: int = 2048):
+def tokenize_batch_for_pretrain(batch, tokenizer: Optional[AutoTokenizer] = None, max_length: int = 2048):
     texts = [sample["text"] for sample in batch]
     data = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=max_length)
     data = {k: v.cuda() for k, v in data.items()}
@@ -160,6 +142,24 @@ def main():
     coordinator = DistCoordinator()
 
     # ==============================
+    # Initialize Model Configs
+    # ==============================
+    MODEL_CONFIGS = {
+    # follow opt-125m
+    "base": MixtralConfig(
+        hidden_size=768,
+        intermediate_size=3072,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        num_key_value_heads=4,
+        max_position_embeddings=args.max_length,
+        num_local_experts=8,
+        use_cache=False,
+        _attn_implementation="flash_attention_2" if args.flash_attention else "eager",
+    ),
+}
+    
+    # ==============================
     # Initialize Booster
     # ==============================
     if args.plugin == "gemini":
@@ -207,19 +207,23 @@ def main():
     # ==============================
     # Initialize Tokenizer, Dataset and Dataloader
     # ==============================
-    tokenizer = LlamaTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mixtral-8x7B-v0.1")
     # follows fast chat: https://github.com/lm-sys/FastChat/blob/main/fastchat/train/train.py#L257
     tokenizer.pad_token = tokenizer.unk_token
 
-    dataset = load_dataset(args.dataset)
-    train_ds = dataset["train"]
-    dataloader = prepare_dataloader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=True,
-        collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
+    # dataset = load_dataset(args.dataset)
+    # train_ds = dataset["train"]
+    train_ds = load_dataset(
+        "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
+        "c4",
+        trust_remote_code=True,
+        split="train",
+        streaming=True,
     )
+    train_ds = train_ds.shuffle(seed=42)
+    dataloader = DataLoader(train_ds, batch_size=args.batch_size, collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length))
+    total_token_num = 60000000000  # 60B
+    esitimated_step_num = total_token_num // args.batch_size // 500
 
     # ==============================
     # Initialize Model, Optimizer and LR Scheduler
@@ -231,7 +235,10 @@ def main():
     )
 
     with init_ctx:
-        model = LlamaForCausalLM(config)
+        default_dtype = torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
+        torch.set_default_dtype(default_dtype)
+        model = MixtralForCausalLM(config)
+        torch.set_default_dtype(torch.float)
 
     if args.grad_checkpoint:
         model.gradient_checkpointing_enable()
@@ -242,9 +249,9 @@ def main():
     model_numel = get_model_numel(model)
     coordinator.print_on_master(f"Model params: {format_numel_str(model_numel)}")
 
-    optimizer = HybridAdam(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weigth_decay)
+    optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weigth_decay)
     lr_scheduler = CosineAnnealingWarmupLR(
-        optimizer, total_steps=args.num_epochs * len(dataloader), warmup_steps=args.warmup_steps, eta_min=0.1 * args.lr
+        optimizer, total_steps=esitimated_step_num, warmup_steps=args.warmup_steps, eta_min=0.1 * args.lr
     )
     default_dtype = torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
     torch.set_default_dtype(default_dtype)
@@ -261,26 +268,27 @@ def main():
     # load checkpoint if specified
     start_epoch = 0
     start_step = 0
-    sampler_start_idx = 0
-    if args.load is not None:
-        coordinator.print_on_master("Loading checkpoint")
-        start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
-        coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
+    # sampler_start_idx = 0
+    # if args.load is not None:
+    #     coordinator.print_on_master("Loading checkpoint")
+    #     start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
+    #     coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
 
-    num_steps_per_epoch = len(dataloader)
+    # num_steps_per_epoch = len(dataloader)
 
     # if resume training, set the sampler start index to the correct value
-    dataloader.sampler.set_start_index(sampler_start_idx)
+    # dataloader.sampler.set_start_index(sampler_start_idx)
     for epoch in range(start_epoch, args.num_epochs):
-        dataloader.sampler.set_epoch(epoch)
-        step_nums = num_steps_per_epoch - start_step
+        # dataloader.sampler.set_epoch(epoch)
+        # step_nums = num_steps_per_epoch - start_step
         dataloader_iter = iter(dataloader)
+        token_num = 0
 
         with tqdm(
-            range(step_nums),
+            range(total_token_num),
             desc=f"Epoch {epoch}",
             disable=not print_flag,
-            total=num_steps_per_epoch,
+            total=total_token_num,
             initial=start_step,
         ) as pbar:
             for step in pbar:
@@ -291,19 +299,26 @@ def main():
                     loss = outputs["loss"]
                 else:
                     batch = next(dataloader_iter)
+                    with torch.no_grad():
+                        cur_token = (batch["input_ids"] != 0).sum().item()
+                        token_num += cur_token
+                        token_per_batch = token_num / args.batch_size / (step + 1)
+                        pbar.update(cur_token)
+                        if token_num > total_token_num:
+                            break
                     outputs = model(**batch)
                     loss = outputs[0]
                     booster.backward(loss, optimizer)
 
-                optimizer.step()
                 lr_scheduler.step()
+                optimizer.step()
                 optimizer.zero_grad()
 
                 if not use_pipeline:
                     all_reduce_mean(loss)
                 if print_flag:
-                    pbar.set_postfix({"loss": loss.item()})
-                    writer.add_scalar("loss", loss.item(), epoch * num_steps_per_epoch + step)
+                    pbar.set_postfix({"token_per_batch": token_per_batch, "loss": loss.item()})
+                    writer.add_scalar("loss", loss.item(), step)
 
                 if args.save_interval > 0 and (step + 1) % args.save_interval == 0:
                     coordinator.print_on_master(f"Saving checkpoint")
