@@ -232,7 +232,7 @@ def main():
 
     train_ds = load_dataset(
         "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
-        "c4_1-4",
+        "test",
         trust_remote_code=True,
         split="train",
     )
@@ -294,7 +294,9 @@ def main():
     if args.load is not None:
         coordinator.print_on_master("Loading checkpoint")
         start_epoch, start_step, sampler_start_idx, token_num = load(booster, model, optimizer, lr_scheduler, args.load)
-        coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
+        coordinator.print_on_master(
+            f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}, token_num {token_num}"
+        )
 
     num_steps_per_epoch = len(dataloader)
 
@@ -323,8 +325,6 @@ def main():
                     with torch.no_grad():
                         cur_token = (batch["input_ids"] != 0).sum().item()
                         token_num += cur_token
-                        token_per_batch = token_num / args.batch_size / (step + 1)
-                        pbar.update(cur_token)
                         if token_num > total_token_num:
                             break
                     outputs = model(**batch)
@@ -338,7 +338,7 @@ def main():
                 if not use_pipeline:
                     all_reduce_mean(loss)
                 if print_flag:
-                    pbar.set_postfix({"token_per_batch": token_per_batch, "loss": loss.item()})
+                    pbar.set_postfix({"token_num": format_numel_str(token_num), "loss": loss.item()})
                     writer.add_scalar("loss_per_step", loss.item(), step)
                     writer.add_scalar("loss_per_token", loss.item(), token_num)
 
