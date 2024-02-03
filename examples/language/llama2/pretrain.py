@@ -226,7 +226,7 @@ def main():
         pin_memory=True,
     )
     total_token_num = 60000000000  # 60B
-    esitimated_step_num = total_token_num // args.batch_size // 500
+    esitimated_step_num = total_token_num // args.batch_size // 400
 
     # ==============================
     # Initialize Model, Optimizer and LR Scheduler
@@ -322,7 +322,8 @@ def main():
                     all_reduce_mean(loss)
                 if print_flag:
                     pbar.set_postfix({"token_per_batch": token_per_batch, "loss": loss.item()})
-                    writer.add_scalar("loss", loss.item(), step)
+                    writer.add_scalar("loss_per_step", loss.item(), step)
+                    writer.add_scalar("loss_per_token", loss.item(), token_num)
 
                 if args.save_interval > 0 and (step + 1) % args.save_interval == 0:
                     coordinator.print_on_master(f"Saving checkpoint")
