@@ -212,8 +212,9 @@ def main():
     # ==============================
     # Initialize Tensorboard
     # ==============================
+    time_prefix = time.strftime("%Y-%m-%d-%H-%M-%S")
     if print_flag:
-        tb_dir = os.path.join(args.tensorboard_dir, f"{time.strftime('%Y-%m-%d-%H-%M-%S')}")
+        tb_dir = os.path.join(args.tensorboard_dir, time_prefix)
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(tb_dir)
 
@@ -351,7 +352,7 @@ def main():
                         step + 1,
                         args.batch_size,
                         coordinator,
-                        args.save_dir,
+                        os.path.join(args.save_dir, time_prefix),
                     )
                     coordinator.print_on_master(f"Saved checkpoint at epoch {epoch} step {step + 1}")
         # the continue epochs are not resumed, so we need to reset the sampler start index and start step
