@@ -11,11 +11,10 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from data_utils import load_json, save_json
+from data_utils import load_json, prepare_dataloader, save_json
 from datasets import load_dataset
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -225,24 +224,20 @@ def main():
     # follows fast chat: https://github.com/lm-sys/FastChat/blob/main/fastchat/train/train.py#L257
     tokenizer.pad_token = tokenizer.unk_token
 
-    # dataset = load_dataset(args.dataset)
-    # train_ds = dataset["train"]
     train_ds = load_dataset(
         "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
-        "c4",
+        "c4_1-4",
         trust_remote_code=True,
         split="train",
-        streaming=True,
     )
-    train_ds = train_ds.shuffle(seed=42)
-    dataloader = DataLoader(
+    dataloader = prepare_dataloader(
         train_ds,
         batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
         collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
-        pin_memory=True,
     )
     total_token_num = 60000000000  # 60B
-    esitimated_step_num = total_token_num // args.batch_size // 400
 
     # ==============================
     # Initialize Model, Optimizer and LR Scheduler
@@ -270,7 +265,7 @@ def main():
 
     optimizer = HybridAdam(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weigth_decay)
     lr_scheduler = CosineAnnealingWarmupLR(
-        optimizer, total_steps=esitimated_step_num, warmup_steps=args.warmup_steps, eta_min=0.1 * args.lr
+        optimizer, total_steps=args.num_epochs * len(dataloader), warmup_steps=args.warmup_steps, eta_min=0.1 * args.lr
     )
     default_dtype = torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
     torch.set_default_dtype(default_dtype)
@@ -287,27 +282,26 @@ def main():
     # load checkpoint if specified
     start_epoch = 0
     start_step = 0
-    # sampler_start_idx = 0
-    # if args.load is not None:
-    #     coordinator.print_on_master("Loading checkpoint")
-    #     start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
-    #     coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
+    sampler_start_idx = 0
+    if args.load is not None:
+        coordinator.print_on_master("Loading checkpoint")
+        start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
+        coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
 
-    # num_steps_per_epoch = esitimated_step_num
+    num_steps_per_epoch = len(dataloader)
 
     # if resume training, set the sampler start index to the correct value
-    # dataloader.sampler.set_start_index(sampler_start_idx)
+    dataloader.sampler.set_start_index(sampler_start_idx)
     for epoch in range(start_epoch, args.num_epochs):
-        # dataloader.sampler.set_epoch(epoch)
-        # step_nums = num_steps_per_epoch - start_step
+        dataloader.sampler.set_epoch(epoch)
         dataloader_iter = iter(dataloader)
         token_num = 0
 
         with tqdm(
-            range(total_token_num),
+            range(start_step, num_steps_per_epoch),
             desc=f"Epoch {epoch}",
             disable=not print_flag,
-            total=total_token_num,
+            total=num_steps_per_epoch,
             initial=start_step,
         ) as pbar:
             for step in pbar:
