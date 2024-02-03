@@ -223,7 +223,6 @@ def main():
         train_ds,
         batch_size=args.batch_size,
         collate_fn=partial(tokenize_batch_for_pretrain, tokenizer=tokenizer, max_length=args.max_length),
-        prefetch_factor=2,
         pin_memory=True,
     )
     total_token_num = 60000000000  # 60B
@@ -278,7 +277,7 @@ def main():
     #     start_epoch, start_step, sampler_start_idx = load(booster, model, optimizer, lr_scheduler, args.load)
     #     coordinator.print_on_master(f"Loaded checkpoint {args.load} at epoch {start_epoch} step {start_step}")
 
-    # num_steps_per_epoch = len(dataloader)
+    # num_steps_per_epoch = esitimated_step_num
 
     # if resume training, set the sampler start index to the correct value
     # dataloader.sampler.set_start_index(sampler_start_idx)
