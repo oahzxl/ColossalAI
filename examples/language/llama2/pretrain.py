@@ -58,6 +58,20 @@ def format_numel_str(numel: int) -> str:
         return f"{numel}"
 
 
+def format_token_str(numel: int) -> str:
+    B = 1000**3
+    M = 1000**2
+    K = 1000
+    if numel >= B:
+        return f"{numel / B:.2f} B"
+    elif numel >= M:
+        return f"{numel / M:.2f} M"
+    elif numel >= K:
+        return f"{numel / K:.2f} K"
+    else:
+        return f"{numel}"
+
+
 def tokenize_batch_for_pretrain(batch, tokenizer: Optional[AutoTokenizer] = None, max_length: int = 2048):
     texts = [sample["text"] for sample in batch]
     data = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=max_length)
@@ -232,7 +246,7 @@ def main():
 
     train_ds = load_dataset(
         "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
-        "test",
+        "c4_1-3",
         trust_remote_code=True,
         split="train",
     )
@@ -338,7 +352,7 @@ def main():
                 if not use_pipeline:
                     all_reduce_mean(loss)
                 if print_flag:
-                    pbar.set_postfix({"token_num": format_numel_str(token_num), "loss": loss.item()})
+                    pbar.set_postfix({"token_num": format_token_str(token_num), "loss": loss.item()})
                     writer.add_scalar("loss_per_step", loss.item(), step)
                     writer.add_scalar("loss_per_token", loss.item(), token_num)
 
