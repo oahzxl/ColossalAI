@@ -251,7 +251,7 @@ def main():
 
     train_ds = load_dataset(
         "/data/personal/nus-zxl/VerticalMoE/data_prepare/redpajama_dataset.py",
-        "c4_1-3",
+        "c4",
         trust_remote_code=True,
         split="train",
     )
