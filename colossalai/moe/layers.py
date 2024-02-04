@@ -6,13 +6,22 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
-from colossalai.moe._operation import AllGather, AllToAll, HierarchicalAllToAll, MoeCombine, MoeDispatch, ReduceScatter
+from colossalai.moe._operation import (
+    AllGather,
+    AllToAll,
+    HierarchicalAllToAll,
+    MoeCombine,
+    MoeDispatch,
+    ParamAll2All,
+    ReduceScatter,
+)
 from colossalai.moe.experts import MLPExperts
 from colossalai.moe.load_balance import LoadBalancer
 from colossalai.moe.manager import MOE_MANAGER
 from colossalai.moe.routers import MoeRouter, get_router_cls
-from colossalai.moe.utils import create_ep_hierarchical_group, get_noise_generator
+from colossalai.moe.utils import create_ep_hierarchical_group, create_tp_balance_group, get_noise_generator
 from colossalai.tensor.moe_tensor.api import get_dp_group, get_ep_group, get_ep_group_ranks, get_ep_size
 
 
@@ -68,6 +77,7 @@ class SparseMLP(nn.Module):
         enable_comm_overlap: bool = False,
         enable_hierarchical_comm: bool = False,
         enable_dp_balance: bool = False,
+        enable_tp_balance: bool = False,
         return_gate_logits: bool = False,
     ):
         super().__init__()
@@ -110,8 +120,9 @@ class SparseMLP(nn.Module):
         )
 
         # get parallel settings
-        self.num_local_experts = self.experts.num_local_experts
+        self.num_local_experts = self.experts.num_local_experts  # not include tp
         if self.expert_parallel is not None:
+            self.dp_group = get_dp_group(self.experts)
             self.ep_group = get_ep_group(self.experts)
             self.ep_size = get_ep_size(self.experts)
             self.ep_hierarchical_info = None
@@ -119,10 +130,12 @@ class SparseMLP(nn.Module):
                 self.ep_hierarchical_info = create_ep_hierarchical_group(
                     get_ep_group_ranks(self.experts), self.num_local_experts
                 )
-            self.dp_group = get_dp_group(self.experts)
+            self.tp_balance_group = None
+            if enable_tp_balance:
+                self.tp_balance_group = create_tp_balance_group(get_ep_group_ranks(self.experts))
         else:
-            self.ep_group = None
             self.dp_group = None
+            self.ep_group = None
 
         # load balance
         self.enable_load_balance = enable_load_balance
@@ -235,6 +248,7 @@ class SparseMLP(nn.Module):
         """
         if not overlap or dist.get_world_size(self.ep_group) == 1:
             if self.ep_hierarchical_info is not None:
+                # all2all send
                 expert_input = HierarchicalAllToAll.apply(
                     dispatch_data,
                     self.ep_hierarchical_info,
@@ -246,13 +260,44 @@ class SparseMLP(nn.Module):
                     self.num_experts,
                 )
                 if not self.enable_dp_balance:
-                    expert_input = expert_input.reshape(self.ep_size, -1, *expert_input.shape[1:])
+                    expert_input = expert_input.reshape(self.ep_size, self.num_local_experts, -1, self.hidden_size)
                     capacity_count = None
                 else:
                     expert_input, capacity_count = expert_input
 
+                # tp balance send
+                if self.tp_balance_group is not None:
+                    expert_input = AllGather.apply(expert_input, self.tp_balance_group, False)[0]
+                    if not self.enable_dp_balance:
+                        expert_input = rearrange(
+                            expert_input,
+                            "tp_size ep_size num_local_experts other hidden_size -> ep_size (tp_size num_local_experts) other hidden_size",
+                        )
+                    else:
+                        expert_input = rearrange(
+                            expert_input, "tp_size experts_per_gpu other dim -> (tp_size experts_per_gpu) other dim"
+                        )
+
+                # compute
                 expert_output = self.experts(expert_input)
 
+                # tp balance recv
+                if self.tp_balance_group is not None:
+                    if not self.enable_dp_balance:
+                        expert_output = rearrange(
+                            expert_output,
+                            "ep_size (tp_size num_local_experts) other hidden_size -> tp_size ep_size num_local_experts other hidden_size",
+                            num_local_experts=self.num_local_experts,
+                        )
+                    else:
+                        expert_output = rearrange(
+                            expert_output,
+                            "(tp_size experts_per_gpu) other dim -> tp_size experts_per_gpu other dim",
+                            experts_per_gpu=self.num_local_experts,
+                        )
+                    expert_output = ReduceScatter.apply(expert_output, self.tp_balance_group, False)[0]
+
+                # all2all recv
                 if not self.enable_dp_balance:
                     expert_output = expert_output.reshape(-1, *expert_output.shape[2:])
                 expert_output = HierarchicalAllToAll.apply(
@@ -406,6 +451,33 @@ class SparseMLP(nn.Module):
                     _expert_in = None
 
             return output
+
+    @torch.no_grad()
+    def gather_tp_balance_param(self):
+        if self.experts.gated:
+            param_list = {"wi_gate": 2, "wi_up": 2, "wo": 1}
+        else:
+            param_list = {"wi": 2, "wo": 1}
+        for param_name, tp_dim in param_list.items():
+            param_data = getattr(self.experts, param_name).data
+            param_data = ParamAll2All.apply(param_data, self.tp_balance_group, tp_dim, False)[0]
+            setattr(getattr(self.experts, param_name), "data", param_data)
+
+
+def apply_tp_balance(model: nn.Module) -> None:
+    """
+    apply tp balance to every experts in the model
+    """
+
+    def _apply_recursive(module: nn.Module):
+        if isinstance(module, SparseMLP):
+            module.gather_tp_balance_param()
+        else:
+            for _, sub_module in module.named_children():
+                _apply_recursive(sub_module)
+
+    _apply_recursive(model)
+    dist.barrier()
 
 
 def apply_load_balance(model: nn.Module, optim: Any) -> None:

@@ -58,6 +58,54 @@ class AllGather(torch.autograd.Function):
         )
 
 
+class ParamAll2All(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: Any,
+        inputs: Tensor,
+        group: ProcessGroup,
+        tp_dim: int,
+        overlap: bool = False,
+    ) -> Tuple[Tensor, Any]:
+        """
+        Returns:
+            outputs: Tensor
+            handle: Optional[Work], if overlap is True
+        """
+        assert ctx is not None or not overlap
+
+        if ctx is not None:
+            ctx.comm_grp = group
+
+        comm_size = dist.get_world_size(group)
+        if comm_size == 1:
+            return inputs.squeeze(0), None
+
+        output_shape = list(inputs.shape)
+        output_shape[tp_dim] = output_shape[tp_dim] // comm_size
+        output_shape = [comm_size] + output_shape
+        outputs = torch.empty(output_shape, dtype=inputs.dtype, device=inputs.device)
+
+        if tp_dim == 1:
+            inputs = rearrange(inputs, "e (comm_size d1) d2 -> comm_size e d1 d2", comm_size=comm_size).contiguous()
+        elif tp_dim == 2:
+            inputs = rearrange(inputs, "e d1 (comm_size d2) -> comm_size e d1 d2", comm_size=comm_size).contiguous()
+        else:
+            raise ValueError("tp_dim should be 1 or 2")
+
+        if not overlap:
+            dist.all_to_all_single(outputs, inputs, group=group)
+            outputs = rearrange(outputs, "comm_size e d1 d2 -> (comm_size e) d1 d2").contiguous()
+            return outputs, None
+        else:
+            handle = dist.all_to_all_single(outputs, inputs, group=group, async_op=True)
+            return outputs, handle
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs) -> Tuple[Tensor, None, None]:
+        raise NotImplementedError("ParamScatter does not support backward")
+
+
 class ReduceScatter(torch.autograd.Function):
     @staticmethod
     def forward(

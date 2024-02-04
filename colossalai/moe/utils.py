@@ -231,3 +231,83 @@ def create_ep_hierarchical_group(
     #     f"rank {rank} intra_src_rank {intra_src_rank} intra_node_ranks {intra_node_ranks} master_node_ranks {master_node_ranks} local_ep_size {local_ep_size} experts_per_gpu {experts_per_gpu}"
     # )
     return intra_src_rank, intra_node_group, master_node_group, local_ep_size, experts_per_gpu
+
+
+def create_tp_balance_group(
+    ep_group_ranks: List[int],
+    nproc_per_node: Optional[int] = None,
+) -> Tuple[int, dist.ProcessGroup, Optional[dist.ProcessGroup]]:
+    """
+    create tensor parallel group for expert balance
+
+    e.g. for 4 gpus [1, 2, 3, 4]. [1, 2] are first ep group, [3, 4] are second ep group.
+        and dp group is within each ep group. Then the tp group is [1, 3] and [2, 4] or
+        it can be [1, 2, 3, 4].
+    """
+    assert dist.is_initialized(), "Please initialize torch.distributed first."
+    rank = dist.get_rank()
+    if nproc_per_node is None:
+        nproc_per_node = os.environ.get("LOCAL_WORLD_SIZE")
+        assert nproc_per_node is not None, "Please use torchrun to launch the job, or specify nproc_per_node manually."
+        nproc_per_node = int(nproc_per_node)
+    else:
+        assert dist.get_world_size() % nproc_per_node == 0, "nproc_per_node should be a divisor of world_size."
+    num_node = dist.get_world_size() // nproc_per_node
+
+    tp_size_cross_ep = 2
+    tp_size_cross_dp = 1
+
+    # master node will gather and scatter all data in a node, and all2all with other master nodes
+    master_node_ranks = [i * nproc_per_node for i in range(num_node)]
+
+    # the master node smaller than current rank is the intra_src_rank
+    intra_src_rank = [i > rank for i in master_node_ranks]
+    if True not in intra_src_rank:
+        intra_src_rank = master_node_ranks[-1]
+        if len(master_node_ranks) == 1:
+            local_ep_size = nproc_per_node // len(ep_group_ranks)
+        else:
+            master_node_rank_gap = master_node_ranks[-1] - master_node_ranks[-2]
+            local_ep_size = sum(
+                [master_node_ranks[-1] <= i < (master_node_ranks[-1] + master_node_rank_gap) for i in ep_group_ranks]
+            )
+    else:
+        intra_src_rank_idx = intra_src_rank.index(True)
+        intra_src_rank = master_node_ranks[intra_src_rank_idx - 1]
+        local_ep_size = sum(
+            [
+                master_node_ranks[intra_src_rank_idx - 1] <= i < master_node_ranks[intra_src_rank_idx]
+                for i in ep_group_ranks
+            ]
+        )
+    local_dp_size = nproc_per_node // local_ep_size
+
+    # ep intra ranks are the ranks in the same node
+    assert (
+        local_ep_size % tp_size_cross_ep == 0
+    ), f"local_ep_size should be divisible by tp_size_cross_ep, {local_ep_size} % {tp_size_cross_ep} = {local_ep_size % tp_size_cross_ep}"
+    assert (
+        local_dp_size % tp_size_cross_dp == 0
+    ), f"local_dp_size should be divisible by tp_size_cross_dp, {local_dp_size} % {tp_size_cross_dp} = {local_dp_size % tp_size_cross_dp}"
+    dp_iter = local_dp_size // tp_size_cross_dp
+    ep_iter = local_ep_size // tp_size_cross_ep
+    tp_balance_group = None
+    for i in range(0, dist.get_world_size(), nproc_per_node):
+        cur_intra_node_ranks = [i + j for j in range(nproc_per_node)]
+        cur_ep_group_ranks = [
+            cur_intra_node_ranks[j : j + local_dp_size]
+            for j in range(0, len(cur_intra_node_ranks), nproc_per_node // local_ep_size)
+        ]
+        for m in range(ep_iter):
+            cur_ep_rank = cur_ep_group_ranks[m * tp_size_cross_ep : (m + 1) * tp_size_cross_ep]
+            for n in range(dp_iter):
+                cur_dp_rank_in_ep = [
+                    cur_ep_rank[k][n * tp_size_cross_dp : (n + 1) * tp_size_cross_dp] for k in range(tp_size_cross_ep)
+                ]
+                cur_tp_rank = sum(cur_dp_rank_in_ep, [])
+                cur_tp_group = dist.new_group(cur_tp_rank)
+                if rank in cur_tp_rank:
+                    tp_balance_group = cur_tp_group
+    assert tp_balance_group is not None, "tp_balance_group should not be None"
+    # print(f"rank {rank}: tp_balance_rank {tp_balance_rank}")
+    return tp_balance_group
