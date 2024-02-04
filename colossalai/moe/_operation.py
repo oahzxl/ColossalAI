@@ -388,6 +388,7 @@ def dp_balance_send(dp_size, local_ep_size, experts_per_gpu, capacity_count, int
                 ep_cap_pos += 1
 
             # add dp_tensor to ep_tensor
+            # TODO: if dp_tensor_list is empty, we should pad a tensor with zeros
             ep_tensor_list.append(torch.cat(dp_tensor_list, dim=0))
 
         new_tensor.append(torch.cat(ep_tensor_list, dim=0))

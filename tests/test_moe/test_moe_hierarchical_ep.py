@@ -118,10 +118,10 @@ def run_test(
 @pytest.mark.parametrize(
     "config",
     [
-        {"world_size": 4, "num_experts": 4, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
-        {"world_size": 4, "num_experts": 8, "batch_size": 32, "dim": 4, "enable_dp_balance": False},
-        {"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
-        {"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": True},
+        {"world_size": 8, "num_experts": 8, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 8, "num_experts": 16, "batch_size": 32, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 8, "num_experts": 4, "batch_size": 8, "dim": 4, "enable_dp_balance": False},
+        {"world_size": 8, "num_experts": 4, "batch_size": 16, "dim": 4, "enable_dp_balance": True},
     ],
 )
 @rerun_if_address_is_in_use()
@@ -137,4 +137,4 @@ def test_moe_hierarchical_ep(config: dict):
 
 
 if __name__ == "__main__":
-    test_moe_hierarchical_ep({"world_size": 4, "num_experts": 2, "batch_size": 8, "dim": 4, "enable_dp_balance": True})
+    test_moe_hierarchical_ep({"world_size": 8, "num_experts": 4, "batch_size": 16, "dim": 4, "enable_dp_balance": True})
