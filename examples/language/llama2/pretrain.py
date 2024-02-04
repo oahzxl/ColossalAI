@@ -72,6 +72,10 @@ def format_token_str(numel: int) -> str:
         return f"{numel}"
 
 
+def args_to_dict(args):
+    return {k: v for k, v in vars(args).items() if not k.startswith("_")}
+
+
 def tokenize_batch_for_pretrain(batch, tokenizer: Optional[AutoTokenizer] = None, max_length: int = 2048):
     texts = [sample["text"] for sample in batch]
     data = tokenizer(texts, return_tensors="pt", padding="max_length", truncation=True, max_length=max_length)
@@ -236,6 +240,7 @@ def main():
         tb_dir = os.path.join(args.tensorboard_dir, time_prefix)
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(tb_dir)
+        writer.add_text("args: ", str(args_to_dict(args)))
 
     # ==============================
     # Initialize Tokenizer, Dataset and Dataloader
