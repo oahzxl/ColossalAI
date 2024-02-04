@@ -33,8 +33,6 @@ _URL_LISTS = {
     # "arxiv": "new_urls/arxiv.txt",
     # "book": "new_urls/book.txt",
     "c4": "new_urls/c4.txt",
-    "c4_1-3": "new_urls/c4_1-3.txt",
-    "test": "new_urls/test.txt",
     # "common_crawl": "new_urls/common_crawl.txt",
     # "github": "new_urls/github.txt",
     # "stackexchange": "new_urls/stackexchange.txt",
@@ -82,18 +80,6 @@ class RedPajama60B(datasets.GeneratorBasedBuilder):
         RedPajama60BConfig(
             name="c4",
             subsets=["c4"],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T c4 subset",
-        ),
-        RedPajama60BConfig(
-            name="c4_1-3",
-            subsets=["c4_1-3"],
-            version=datasets.Version("1.0.0", ""),
-            description="RedPajama1T c4 subset",
-        ),
-        RedPajama60BConfig(
-            name="test",
-            subsets=["test"],
             version=datasets.Version("1.0.0", ""),
             description="RedPajama1T c4 subset",
         ),

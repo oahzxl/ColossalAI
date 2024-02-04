@@ -1,1 +1,0 @@
-https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
