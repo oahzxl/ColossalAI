@@ -281,7 +281,7 @@ def main():
         default_dtype = torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
         torch.set_default_dtype(default_dtype)
         model = MixtralForCausalLM(config)
-        replace_moe_layer(model)
+        replace_moe_layer(model, enable_kernel=True)
         torch.set_default_dtype(torch.float)
 
     if args.grad_checkpoint:
