@@ -420,7 +420,9 @@ class MixtralSparseMLP:
 
             # get the attributes of the module
             moe_kwargs = dict(
-                num_experts=8,
+                # NOTE: in ep, we use 8 experts
+                # num_experts=8,
+                num_experts=module.num_experts,
                 hidden_size=module.hidden_dim,
                 intermediate_size=module.ffn_dim,
                 router_top_k=module.top_k,
