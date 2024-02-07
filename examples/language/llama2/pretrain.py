@@ -123,6 +123,14 @@ def save(
 def load(
     booster: Booster, model: nn.Module, optimizer: Optimizer, lr_scheduler: _LRScheduler, load_dir: str
 ) -> Tuple[int, int, int]:
+    if "/epoch0-step" not in load_dir:
+        dir_list = os.listdir(load_dir)
+        dir_list = [(d, int(d.replace("epoch0-step", ""))) for d in dir_list if "epoch0-step" in d]
+        dir_list.sort(key=lambda x: x[1], reverse=True)
+        load_dir = os.path.join(load_dir, dir_list[0][0])
+        if dist.get_rank() == 0:
+            print(f"Find latest checkpoint: {load_dir}")
+
     booster.load_model(model, os.path.join(load_dir, "model"))
     booster.load_optimizer(optimizer, os.path.join(load_dir, "optimizer"))
     booster.load_lr_scheduler(lr_scheduler, os.path.join(load_dir, "lr_scheduler"))
