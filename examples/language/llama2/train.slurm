@@ -37,4 +37,6 @@ HOSTS=$(scontrol show hostnames $SLURM_NODELIST | sed -z 's/\n/,/g;s/,$//')
 MASTER=$(echo $HOSTS | cut -d, -f1)
 echo "master:$MASTER, hosts:$HOSTS"
 
-colossalai run --nproc_per_node 3 --num_nodes $SLURM_JOB_NUM_NODES --host $HOSTS --master_addr $MASTER pretrain.py --plugin zero2 --batch_size 24 --config base --lr 3e-4 --max_length 1024 --warmup_steps 2000 --mixed_precision bf16 --save_interval 1000 --flash_attention --load /work/09877/xuanlei/ls6/VMoE/examples/language/llama2/checkpoint/2024-02-06-16-02-04/epoch0-step10000
+cd /work/09877/xuanlei/ls6/VMoE/examples/language/llama2
+
+colossalai run --nproc_per_node 3 --num_nodes $SLURM_JOB_NUM_NODES --host $HOSTS --master_addr $MASTER pretrain.py --plugin zero2 --batch_size 24 --config base --lr 3e-4 --max_length 1024 --warmup_steps 2000 --mixed_precision bf16 --save_interval 2000 --flash_attention
