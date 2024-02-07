@@ -209,7 +209,7 @@ class SparseMLP(nn.Module):
         ans = ans.reshape(inputs.shape)
 
         if self.return_gate_logits:
-            return ans, gate_logits
+            return ans, gate_logits.view(-1, self.num_experts)
         else:
             return ans
 

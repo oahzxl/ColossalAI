@@ -13,13 +13,13 @@ import torch.distributed as dist
 import torch.nn as nn
 from data_utils import load_json, prepare_dataloader, save_json
 from datasets import load_dataset
+from modeling_mixtral import MixtralDecoderLayer, MixtralForCausalLM, MixtralSparseMoeBlock
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
-from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer, MixtralSparseMoeBlock
+from transformers.models.mixtral import MixtralConfig
 
 import colossalai
 from colossalai.booster import Booster
@@ -200,6 +200,7 @@ def main():
             max_position_embeddings=args.max_length,
             num_local_experts=8,
             use_cache=False,
+            output_router_logits=True,
             _attn_implementation="flash_attention_2" if args.flash_attention else "eager",
         ),
     }
@@ -361,6 +362,7 @@ def main():
                             break
                     outputs = model(**batch)
                     loss = outputs[0]
+                    aux_loss = outputs[1]
                     booster.backward(loss, optimizer)
 
                 optimizer.step()
@@ -370,9 +372,13 @@ def main():
                 if not use_pipeline:
                     all_reduce_mean(loss)
                 if print_flag:
-                    pbar.set_postfix({"token_num": format_token_str(token_num), "loss": loss.item()})
+                    pbar.set_postfix(
+                        {"token_num": format_token_str(token_num), "aux_loss": aux_loss.item(), "loss": loss.item()}
+                    )
                     writer.add_scalar("loss_per_step", loss.item(), step)
                     writer.add_scalar("loss_per_token", loss.item(), token_num)
+                    writer.add_scalar("aux_loss_per_step", aux_loss.item(), step)
+                    writer.add_scalar("aux_loss_per_token", aux_loss.item(), token_num)
 
                 if args.save_interval > 0 and (step + 1) % args.save_interval == 0:
                     coordinator.print_on_master(f"Saving checkpoint")
