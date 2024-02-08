@@ -105,7 +105,8 @@ def save(
     save_dir: str,
 ):
     save_dir = os.path.join(save_dir, f"epoch{epoch}-step{step}")
-    os.makedirs(os.path.join(save_dir, "model"), exist_ok=True)
+    if coordinator.is_master():
+        os.makedirs(os.path.join(save_dir, "model"), exist_ok=True)
 
     booster.save_model(model, os.path.join(save_dir, "model"), shard=True)
     booster.save_optimizer(optimizer, os.path.join(save_dir, "optimizer"), shard=True)
