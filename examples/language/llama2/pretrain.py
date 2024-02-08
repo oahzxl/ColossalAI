@@ -4,6 +4,7 @@ import random
 import resource
 import time
 from contextlib import nullcontext
+from datetime import datetime
 from functools import partial
 from typing import Optional, Tuple
 
@@ -92,6 +93,20 @@ def all_reduce_mean(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
+def get_synced_timestamp():
+    # broadcast timestamp
+    if dist.get_rank() == 0:
+        timestamp = time.time()
+    else:
+        timestamp = 0.0
+    timestamp = torch.tensor(timestamp, dtype=torch.float64, device=get_current_device())
+    dist.broadcast(timestamp, src=0)
+    # format
+    timestamp = datetime.fromtimestamp(timestamp.item())
+    timestamp = timestamp.strftime("%Y-%m-%d-%H-%M-%S")
+    return timestamp
+
+
 def save(
     booster: Booster,
     model: nn.Module,
@@ -105,8 +120,7 @@ def save(
     save_dir: str,
 ):
     save_dir = os.path.join(save_dir, f"epoch{epoch}-step{step}")
-    if coordinator.is_master():
-        os.makedirs(os.path.join(save_dir, "model"), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "model"), exist_ok=True)
 
     booster.save_model(model, os.path.join(save_dir, "model"), shard=True)
     booster.save_optimizer(optimizer, os.path.join(save_dir, "optimizer"), shard=True)
@@ -247,7 +261,7 @@ def main():
     # ==============================
     # Initialize Tensorboard
     # ==============================
-    time_prefix = time.strftime("%Y-%m-%d-%H-%M-%S")
+    time_prefix = get_synced_timestamp()
     if print_flag:
         tb_dir = os.path.join(args.tensorboard_dir, time_prefix)
         os.makedirs(tb_dir, exist_ok=True)
