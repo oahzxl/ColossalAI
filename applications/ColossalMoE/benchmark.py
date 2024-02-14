@@ -21,8 +21,6 @@ from colossalai.booster.plugin.moe_hybrid_parallel_plugin import MoeHybridParall
 from colossalai.cluster import DistCoordinator
 from colossalai.logging import DistributedLogger
 from colossalai.moe import MOE_MANAGER, apply_load_balance
-from colossalai.moe.layers import apply_load_balance
-from colossalai.moe.manager import MOE_MANAGER
 from colossalai.nn.optimizer import HybridAdam
 from colossalai.utils import get_current_device
 
