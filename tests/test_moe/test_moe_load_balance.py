@@ -40,7 +40,7 @@ def run_fwd_bwd(model, data, label, criterion, optimizer, enable_autocast=False)
     return y
 
 
-def run_zero_optim_test(local_rank, world_size, stage=1):
+def run_ep_test(local_rank, world_size, stage=1):
     criterion = torch.nn.CrossEntropyLoss()
 
     MOE_MANAGER.__init__()
@@ -96,7 +96,7 @@ def run_zero_optim_test(local_rank, world_size, stage=1):
     assert torch.allclose(zero_out, torch_out, atol=3e-5), f"zero_out:{zero_out}\ntorch_out{torch_out}"
 
 
-def run_hybrid_zero_optim_test(local_rank, world_size, stage=1):
+def run_ep_zero_test(local_rank, world_size, stage=1):
     criterion = torch.nn.CrossEntropyLoss()
     data = torch.randn(16, 4).cuda()
     label = torch.randint(0, 4, (16,)).cuda()
@@ -171,10 +171,10 @@ def run_dist(rank, world_size, port):
         port=port,
         backend="nccl",
     )
-    run_zero_optim_test(rank, world_size, stage=1)
-    run_zero_optim_test(rank, world_size, stage=2)
-    run_hybrid_zero_optim_test(rank, world_size, stage=1)
-    run_hybrid_zero_optim_test(rank, world_size, stage=2)
+    run_ep_test(rank, world_size, stage=1)
+    run_ep_test(rank, world_size, stage=2)
+    run_ep_zero_test(rank, world_size, stage=1)
+    run_ep_zero_test(rank, world_size, stage=2)
 
 
 @pytest.mark.dist
