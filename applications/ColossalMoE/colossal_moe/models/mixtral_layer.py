@@ -18,7 +18,7 @@ class MixtralSparseMLP:
         )
 
     @staticmethod
-    def from_native_module(module: MixtralSparseMoeBlock, enable_kernel: bool) -> nn.Module:
+    def from_native_module(module: MixtralSparseMoeBlock, **kwargs) -> nn.Module:
         r"""
         Convert a native pytorch layer norm module to FusedLayerNorm module provided by apex,
         and optionally marking parameters for gradient aggregation.
@@ -44,18 +44,10 @@ class MixtralSparseMLP:
                 router_top_k=module.top_k,
                 router_norm=True,
                 router_loss=False,
-                # router_capacity_factor_train=
-                # router_capacity_factor_eval=
                 mlp_activation="silu",
                 mlp_gated=True,
-                # enable_load_balance=
-                # load_balance_tolerance=
-                # load_balance_beam_width=
-                # load_balance_group_swap_factor=
-                enable_kernel=enable_kernel,
-                # enable_comm_overlap=
-                # enable_hierarchical_comm=
                 return_gate_logits=True,
+                **kwargs,
             )
             dtype = module.gate.weight.dtype
             device = module.gate.weight.device
@@ -64,7 +56,7 @@ class MixtralSparseMLP:
         return sparse_mlp
 
 
-def replace_moe_layer(model: nn.Module, enable_kernel: bool = False) -> nn.Module:
+def replace_moe_layer(model: nn.Module, **kwargs) -> nn.Module:
     """
     Reverse the replace layer operation
 
@@ -72,9 +64,7 @@ def replace_moe_layer(model: nn.Module, enable_kernel: bool = False) -> nn.Modul
         module (torch.nn.Module): The object of layer to shard
     """
     if isinstance(model, MixtralDecoderLayer):
-        model.block_sparse_moe = MixtralSparseMLP.from_native_module(
-            model.block_sparse_moe, enable_kernel=enable_kernel
-        )
+        model.block_sparse_moe = MixtralSparseMLP.from_native_module(model.block_sparse_moe, **kwargs)
     else:
         for _, child in model.named_children():
-            replace_moe_layer(child, enable_kernel)
+            replace_moe_layer(child, **kwargs)
